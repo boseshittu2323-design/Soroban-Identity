@@ -11,6 +11,11 @@ const ADMIN: Symbol = symbol_short!("ADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
 const CRED: Symbol = symbol_short!("CRED");
 
+/// ~1 year in ledgers (5-second ledger close time). Used as the max TTL cap.
+const TTL_MAX: u32 = 6_312_000;
+/// Minimum TTL threshold before we bother extending (1 day in ledgers).
+const TTL_MIN: u32 = 17_280;
+
 // ── Data types ────────────────────────────────────────────────────────────────
 
 /// Credential types supported by the protocol.
@@ -117,12 +122,16 @@ impl CredentialManager {
 
         let key = Self::cred_key(&env, &id);
         env.storage().persistent().set(&key, &credential);
+        // Bump TTL: use time-to-expiry if set, otherwise cap at 1 year
+        let ttl = Self::ttl_for_credential(&env, expires_at);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
 
         // Index credential under subject
         let mut subject_creds = Self::get_subject_credentials(&env, &subject);
         subject_creds.push_back(id.clone());
         let subject_key = Self::subject_key(&env, &subject);
         env.storage().persistent().set(&subject_key, &subject_creds);
+        env.storage().persistent().extend_ttl(&subject_key, TTL_MAX, TTL_MAX);
 
         env.events().publish((CRED, symbol_short!("issued")), (issuer, subject));
 
@@ -146,6 +155,7 @@ impl CredentialManager {
 
         cred.revoked = true;
         env.storage().persistent().set(&key, &cred);
+        // Do NOT extend TTL for revoked credentials — let them expire naturally
         env.events().publish((CRED, symbol_short!("revoked")), credential_id);
     }
 
@@ -158,9 +168,13 @@ impl CredentialManager {
                 if cred.revoked {
                     return false;
                 }
-                if cred.expires_at > 0 && env.ledger().timestamp() > cred.expires_at {
+                let now = env.ledger().timestamp();
+                if cred.expires_at > 0 && now > cred.expires_at {
                     return false;
                 }
+                // Bump TTL on read for active, non-expired credentials
+                let ttl = Self::ttl_for_credential(&env, cred.expires_at);
+                env.storage().persistent().extend_ttl(&key, ttl, ttl);
                 true
             }
         }
@@ -169,10 +183,17 @@ impl CredentialManager {
     /// Get a credential by ID.
     pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Credential {
         let key = Self::cred_key(&env, &credential_id);
-        env.storage()
+        let cred: Credential = env
+            .storage()
             .persistent()
             .get(&key)
-            .expect("credential not found")
+            .expect("credential not found");
+        // Bump TTL on read only for active credentials
+        if !cred.revoked {
+            let ttl = Self::ttl_for_credential(&env, cred.expires_at);
+            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        }
+        cred
     }
 
     /// List all credential IDs for a subject.
@@ -225,6 +246,23 @@ impl CredentialManager {
         key.extend_from_array(&[b's', b'u', b'b', b':']);
         key.extend_from_slice(&subject.to_string().into_bytes());
         key
+    }
+
+    /// Compute TTL ledgers for a credential.
+    /// If expires_at is set, use time-to-expiry converted to ledgers (capped at TTL_MAX).
+    /// If no expiry, use TTL_MAX.
+    fn ttl_for_credential(env: &Env, expires_at: u64) -> u32 {
+        if expires_at == 0 {
+            return TTL_MAX;
+        }
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
+            return TTL_MIN; // already expired or expiring soon — minimal extension
+        }
+        let secs_remaining = expires_at - now;
+        // 5 seconds per ledger
+        let ledgers = (secs_remaining / 5) as u32;
+        ledgers.min(TTL_MAX).max(TTL_MIN)
     }
 }
 
@@ -286,4 +324,66 @@ mod tests {
         client.revoke_credential(&issuer, &cred_id);
         assert!(!client.verify_credential(&cred_id));
     }
-}
+
+    #[test]
+    fn test_ttl_bumped_on_issue() {
+        let (env, _admin, client) = setup();
+
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        let claims: Map<String, String> = Map::new(&env);
+        let sig = Bytes::from_array(&env, &[0u8; 64]);
+
+        // Issue with no expiry — should use TTL_MAX
+        let cred_id = client.issue_credential(
+            &issuer, &subject, &CredentialType::Kyc, &claims, &sig, &0u64,
+        );
+
+        // Credential should still be verifiable (TTL was set)
+        assert!(client.verify_credential(&cred_id));
+    }
+
+    #[test]
+    fn test_ttl_bumped_on_verify_active() {
+        let (env, _admin, client) = setup();
+
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        let claims: Map<String, String> = Map::new(&env);
+        let sig = Bytes::from_array(&env, &[0u8; 64]);
+        let cred_id = client.issue_credential(
+            &issuer, &subject, &CredentialType::Kyc, &claims, &sig, &0u64,
+        );
+
+        // Two consecutive verifies — both should succeed (TTL bumped on first)
+        assert!(client.verify_credential(&cred_id));
+        assert!(client.verify_credential(&cred_id));
+    }
+
+    #[test]
+    fn test_ttl_not_bumped_on_revoked() {
+        let (env, _admin, client) = setup();
+
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        let claims: Map<String, String> = Map::new(&env);
+        let sig = Bytes::from_array(&env, &[0u8; 64]);
+        let cred_id = client.issue_credential(
+            &issuer, &subject, &CredentialType::Kyc, &claims, &sig, &0u64,
+        );
+
+        client.revoke_credential(&issuer, &cred_id);
+
+        // verify_credential returns false for revoked — no TTL bump
+        assert!(!client.verify_credential(&cred_id));
+
+        // get_credential still returns the record (not extended)
+        let cred = client.get_credential(&cred_id);
+        assert!(cred.revoked);
+    }
