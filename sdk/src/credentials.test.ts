@@ -311,4 +311,75 @@ describe("CredentialClient", () => {
 
     await expect(client.isIssuer("GABC", "GISSUER")).rejects.toThrow("Simulation failed: contract trap");
   });
+
+  it("getCredentialCount — returns count for a subject", async () => {
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ result: { retval: 3 } });
+
+    const count = await client.getCredentialCount("GABC", "GSUBJECT");
+
+    expect(count).toBe(3);
+  });
+
+  it("getCredentialCount — returns 0 when subject has no credentials", async () => {
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ result: { retval: 0 } });
+
+    const count = await client.getCredentialCount("GABC", "GSUBJECT");
+
+    expect(count).toBe(0);
+  });
+
+  it("getCredentialCount — throws InvalidAddress for invalid caller", async () => {
+    await expect(client.getCredentialCount("bad-address", "GSUBJECT")).rejects.toThrow("InvalidAddress");
+  });
+
+  it("getCredentialCount — throws InvalidAddress for invalid subject", async () => {
+    await expect(client.getCredentialCount("GABC", "bad-address")).rejects.toThrow("InvalidAddress");
+  });
+
+  it("getCredentialCount — throws on simulation error", async () => {
+    const { SorobanRpc } = await import("@stellar/stellar-sdk");
+    vi.mocked(SorobanRpc.Api.isSimulationError).mockReturnValueOnce(true);
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ error: "contract trap" });
+
+    await expect(client.getCredentialCount("GABC", "GSUBJECT")).rejects.toThrow("Simulation failed: contract trap");
+  });
+
+  it("getCredential — throws CredentialNotFound when credential does not exist", async () => {
+    const { SorobanRpc } = await import("@stellar/stellar-sdk");
+    vi.mocked(SorobanRpc.Api.isSimulationError).mockReturnValueOnce(true);
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ error: "CredentialNotFound" });
+
+    await expect(client.getCredential("GABC", "aabbcc")).rejects.toThrow("CredentialNotFound");
+  });
+
+  it("getCredential — throws CredentialRevoked when credential has been revoked", async () => {
+    const { SorobanRpc } = await import("@stellar/stellar-sdk");
+    vi.mocked(SorobanRpc.Api.isSimulationError).mockReturnValueOnce(true);
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ error: "CredentialRevoked" });
+
+    await expect(client.getCredential("GABC", "aabbcc")).rejects.toThrow("CredentialRevoked");
+  });
+
+  it("getCredential — throws CredentialNotFound for error code #3", async () => {
+    const { SorobanRpc } = await import("@stellar/stellar-sdk");
+    vi.mocked(SorobanRpc.Api.isSimulationError).mockReturnValueOnce(true);
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ error: "contract error #3" });
+
+    await expect(client.getCredential("GABC", "aabbcc")).rejects.toThrow("CredentialNotFound");
+  });
+
+  it("getCredential — throws CredentialRevoked for error code #4", async () => {
+    const { SorobanRpc } = await import("@stellar/stellar-sdk");
+    vi.mocked(SorobanRpc.Api.isSimulationError).mockReturnValueOnce(true);
+    const server = (client as any).server;
+    server.simulateTransaction.mockResolvedValueOnce({ error: "contract error #4" });
+
+    await expect(client.getCredential("GABC", "aabbcc")).rejects.toThrow("CredentialRevoked");
+  });
 });

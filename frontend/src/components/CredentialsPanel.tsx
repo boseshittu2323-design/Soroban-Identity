@@ -77,9 +77,9 @@ const CREDENTIAL_TYPE_ICONS: Record<CredentialType, string> = {
   Custom: "📋",
 };
 
-function countByType(type: FilterType): number {
-  if (type === "All") return MOCK_CREDENTIALS.length;
-  return MOCK_CREDENTIALS.filter((c) => c.credentialType === type).length;
+function countByType(creds: typeof MOCK_CREDENTIALS, type: FilterType): number {
+  if (type === "All") return creds.length;
+  return creds.filter((c) => c.credentialType === type).length;
 }
 
 export default function CredentialsPanel({ wallet }: Props) {
@@ -98,6 +98,11 @@ export default function CredentialsPanel({ wallet }: Props) {
   const [activeFilter, setActiveFilter] = useState<FilterType>("All");
   const [isIssuer, setIsIssuer] = useState(false);
   const [checkingIssuer, setCheckingIssuer] = useState(false);
+
+  const [searchAddress, setSearchAddress] = useState("");
+  const [searchedAddress, setSearchedAddress] = useState<string | null>(null);
+  const [fetchedCredentials, setFetchedCredentials] = useState<typeof MOCK_CREDENTIALS | null>(null);
+  const [fetching, setFetching] = useState(false);
 
   // Check if connected wallet is a registered issuer
   useEffect(() => {
@@ -123,8 +128,25 @@ export default function CredentialsPanel({ wallet }: Props) {
 
     checkIssuerStatus();
   }, [wallet.connected, wallet.publicKey]);
-  const [isIssuer, setIsIssuer] = useState(false);
-  const [checkingIssuer, setCheckingIssuer] = useState(false);
+
+  const handleSearch = async () => {
+    const addr = searchAddress.trim();
+    if (!addr) return;
+    setFetching(true);
+    setFetchedCredentials(null);
+    setSearchedAddress(addr);
+    try {
+      // TODO: wire CredentialClient.getCredentialsBySubject() from SDK
+      await new Promise((r) => setTimeout(r, 600));
+      // Mock: return credentials only for addresses that match existing mock subjects
+      const results = MOCK_CREDENTIALS.filter((c) => c.subject === addr);
+      setFetchedCredentials(results);
+    } catch {
+      setFetchedCredentials([]);
+    } finally {
+      setFetching(false);
+    }
+  };
 
   const validateIssueForm = (): boolean => {
     const errors: Record<string, string> = {};
@@ -175,10 +197,12 @@ export default function CredentialsPanel({ wallet }: Props) {
     setClaims(updated);
   };
 
+  const displayCredentials = fetchedCredentials ?? MOCK_CREDENTIALS;
+
   const filteredCredentials =
     activeFilter === "All"
-      ? MOCK_CREDENTIALS
-      : MOCK_CREDENTIALS.filter((c) => c.credentialType === activeFilter);
+      ? displayCredentials
+      : displayCredentials.filter((c) => c.credentialType === activeFilter);
 
   const handleVerify = async () => {
     if (!credId.trim()) return;
@@ -231,9 +255,24 @@ export default function CredentialsPanel({ wallet }: Props) {
       {/* Filter bar */}
       <div className="card">
         <h2>Credentials</h2>
+
+        {/* Subject search */}
+        <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
+          <input
+            placeholder="Search by subject address (G…)"
+            value={searchAddress}
+            onChange={(e) => setSearchAddress(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            style={{ flex: 1 }}
+          />
+          <button onClick={handleSearch} disabled={fetching || !searchAddress.trim()}>
+            {fetching ? "Searching…" : "Search"}
+          </button>
+        </div>
+
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
           {FILTER_OPTIONS.map((type) => {
-            const count = countByType(type);
+            const count = countByType(displayCredentials, type);
             const isActive = activeFilter === type;
             return (
               <button
@@ -269,7 +308,16 @@ export default function CredentialsPanel({ wallet }: Props) {
           })}
         </div>
 
-        {filteredCredentials.length === 0 ? (
+        {fetching ? (
+          <SkeletonCard rows={3} />
+        ) : fetchedCredentials !== null && fetchedCredentials.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "2rem 1rem", color: "var(--text-muted)" }}>
+            <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🪪</div>
+            <p style={{ margin: 0, fontSize: "0.9rem" }}>
+              No credentials found for this address.
+            </p>
+          </div>
+        ) : filteredCredentials.length === 0 ? (
           <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
             No {activeFilter} credentials found.
           </p>

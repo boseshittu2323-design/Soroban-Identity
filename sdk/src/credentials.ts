@@ -195,6 +195,8 @@ export class CredentialClient {
 
   /**
    * Get a credential by ID.
+   * Throws "CredentialNotFound" if the ID was never issued.
+   * Throws "CredentialRevoked" if the credential was issued but later revoked.
    */
   async getCredential(
     callerAddress: string,
@@ -221,7 +223,14 @@ export class CredentialClient {
 
     const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
     if (SorobanRpc.Api.isSimulationError(result)) {
-      throw new Error(`Simulation failed: ${result.error}`);
+      const error: string = (result as { error: string }).error ?? "";
+      if (error.includes("CredentialNotFound") || error.includes("#3")) {
+        throw new Error("CredentialNotFound: credential does not exist");
+      }
+      if (error.includes("CredentialRevoked") || error.includes("#4")) {
+        throw new Error("CredentialRevoked: credential has been revoked");
+      }
+      throw new Error(`Simulation failed: ${error}`);
     }
 
     return scValToNative(
@@ -280,6 +289,43 @@ export class CredentialClient {
     return Promise.all(
       credentialIds.map((id) => this.verifyCredential(callerAddress, id, options))
     );
+  }
+
+  /**
+   * Get the total number of credentials issued to a subject (decremented on revoke).
+   */
+  async getCredentialCount(
+    callerAddress: string,
+    subjectAddress: string,
+    options?: CallOptions
+  ): Promise<number> {
+    validateStellarAddress(callerAddress);
+    validateStellarAddress(subjectAddress);
+    const account = await this.server.getAccount(callerAddress);
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          "get_credential_count",
+          nativeToScVal(subjectAddress, { type: "address" })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      throw new Error(`Simulation failed: ${result.error}`);
+    }
+
+    return scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
+        .result!.retval
+    ) as number;
   }
 
   /**

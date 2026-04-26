@@ -24,6 +24,8 @@ const MAX_ISSUERS: u32 = 100;
 pub enum ContractError {
     AlreadyInitialized       = 1,
     UnauthorizedIssuer       = 2,
+    CredentialNotFound       = 3,
+    CredentialRevoked        = 4,
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -202,6 +204,11 @@ impl CredentialManager {
         let subject_key = Self::subject_key(&subject);
         env.storage().persistent().set(&subject_key, &subject_creds);
 
+        // Increment per-subject credential counter
+        let cnt_key = (CRED_CNT, subject.clone());
+        let cnt: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0);
+        env.storage().persistent().set(&cnt_key, &(cnt + 1));
+
         // Index credential under issuer+subject+type
         let mut type_creds = existing;
         type_creds.push_back(id.clone());
@@ -252,18 +259,26 @@ impl CredentialManager {
         }
     }
 
-    /// Get a credential by ID.
-    pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Credential {
+    /// Get a credential by ID. Returns CredentialNotFound if it never existed,
+    /// or CredentialRevoked if it was issued but later revoked.
+    pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Result<Credential, ContractError> {
         let key = Self::cred_key(&credential_id);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .expect("credential not found")
+        match env.storage().persistent().get::<(Symbol, BytesN<32>), Credential>(&key) {
+            None => Err(ContractError::CredentialNotFound),
+            Some(cred) if cred.revoked => Err(ContractError::CredentialRevoked),
+            Some(cred) => Ok(cred),
+        }
     }
 
     /// List all credential IDs for a subject.
     pub fn get_subject_credentials(env: Env, subject: Address) -> Vec<BytesN<32>> {
         Self::fetch_subject_creds(&env, &subject)
+    }
+
+    /// Get the total number of credentials issued to a subject (decremented on revoke).
+    pub fn get_credential_count(env: Env, subject: Address) -> u32 {
+        let cnt_key = (CRED_CNT, subject);
+        env.storage().persistent().get(&cnt_key).unwrap_or(0)
     }
 
     /// Get the list of all registered issuers. No auth required — read-only.
@@ -515,7 +530,7 @@ mod tests {
             &issuer, &subject, &CredentialType::Achievement, &claims, &sig, &expires_at,
         );
 
-        let cred = client.get_credential(&cred_id);
+        let cred = client.get_credential(&cred_id).unwrap();
         assert_eq!(cred.issuer, issuer);
         assert_eq!(cred.subject, subject);
         assert_eq!(cred.credential_type, CredentialType::Achievement);

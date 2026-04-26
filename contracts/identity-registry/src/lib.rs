@@ -10,10 +10,11 @@ use soroban_sdk::{
 #[contracterror]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
-    DidNotFound       = 1,
-    DidDeactivated    = 2,
-    MetadataTooLong   = 3,
+    DidNotFound        = 1,
+    DidDeactivated     = 2,
+    MetadataTooLong    = 3,
     AlreadyInitialized = 4,
+    EmptyMetadata      = 5,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -141,6 +142,10 @@ impl IdentityRegistry {
     /// Update metadata on an existing DID.
     pub fn update_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<(), ContractError> {
         controller.require_auth();
+
+        if metadata.is_empty() {
+            return Err(ContractError::EmptyMetadata);
+        }
 
         Self::validate_metadata(&metadata)?;
 
@@ -396,6 +401,27 @@ mod tests {
 
         let result = client.try_create_did(&user, &metadata);
         assert_eq!(result, Err(Ok(ContractError::MetadataTooLong)));
+    }
+
+    /// update_did must return EmptyMetadata when an empty map is passed.
+    #[test]
+    fn test_update_did_empty_metadata_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let user = Address::generate(&env);
+        let mut metadata: Map<String, String> = Map::new(&env);
+        metadata.set(String::from_str(&env, "key"), String::from_str(&env, "value"));
+        client.create_did(&user, &metadata);
+
+        let result = client.try_update_did(&user, &Map::new(&env));
+        assert_eq!(result, Err(Ok(ContractError::EmptyMetadata)));
     }
 
     /// update_did must return MetadataTooLong when a value exceeds 256 chars.
