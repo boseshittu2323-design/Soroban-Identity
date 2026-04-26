@@ -333,6 +333,9 @@ export default function CredentialsPanel({ wallet }: Props) {
                 }}
               >
                 <div
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expandedCredId === cred.id}
                   style={{
                     padding: "0.6rem 1rem",
                     display: "flex",
@@ -344,6 +347,14 @@ export default function CredentialsPanel({ wallet }: Props) {
                     cursor: "pointer",
                   }}
                   onClick={() => setExpandedCredId(expandedCredId === cred.id ? null : cred.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setExpandedCredId(expandedCredId === cred.id ? null : cred.id);
+                    } else if (e.key === "Escape") {
+                      setExpandedCredId(null);
+                    }
+                  }}
                 >
                   <span style={{ fontSize: "1.2rem", minWidth: "1.5rem" }}>
                     {CREDENTIAL_TYPE_ICONS[cred.credentialType] || "📋"}
