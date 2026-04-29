@@ -3,7 +3,9 @@
     "title": "Soroban Identity",
     "subtitle": "Identidad Descentralizada para un Mundo sin Confianza",
     "lightMode": "☀ Claro",
-    "darkMode": "☾ Oscuro"
+    "darkMode": "☾ Oscuro",
+    "networkOnline": "Red Conectada",
+    "networkOffline": "Error de Red"
   },
   "tabs": {
     "identity": "Identidad (DID)",

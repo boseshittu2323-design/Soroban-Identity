@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { SorobanRpc } from "@stellar/stellar-sdk";
 import IdentityPanel from "./components/IdentityPanel";
 import CredentialsPanel from "./components/CredentialsPanel";
 import WalletButton from "./components/WalletButton";
 import { useWallet } from "./hooks/useWallet";
 import { useCredentialExpiryCheck } from "./hooks/useCredentialExpiryCheck";
+import { checkConnection, TESTNET_CONFIG } from "../../sdk/src/index";
 import type { Credential } from "../../sdk/src/types";
 
 type Tab = "identity" | "credentials";
@@ -32,6 +34,7 @@ export default function App() {
   const wallet = useWallet();
   const [isDark, toggleDark] = useDarkMode();
   const { t, i18n } = useTranslation();
+  const [isConnected, setIsConnected] = useState<boolean | null>(null);
 
   // Check for verify query param on load
   useEffect(() => {
@@ -41,6 +44,16 @@ export default function App() {
       setVerifyId(verifyParam);
       setTab("credentials");
     }
+  }, []);
+
+  // Check RPC connection health on load
+  useEffect(() => {
+    const checkRpcHealth = async () => {
+      const server = new SorobanRpc.Server(TESTNET_CONFIG.rpcUrl);
+      const healthy = await checkConnection(server);
+      setIsConnected(healthy);
+    };
+    checkRpcHealth();
   }, []);
 
   // Mock fetch — replace with CredentialClient.getCredentialsBySubject() when wired
@@ -66,6 +79,23 @@ export default function App() {
         <h1>{t("app.title")}</h1>
         <p>{t("app.subtitle")}</p>
         <div style={{ position: "absolute", top: "1rem", right: 0, display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          {isConnected !== null && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                padding: "0.4rem 0.8rem",
+                borderRadius: "0.25rem",
+                backgroundColor: isConnected ? "var(--success-bg, #d4edda)" : "var(--danger-bg, #f8d7da)",
+                color: isConnected ? "var(--success-text, #155724)" : "var(--danger-text, #721c24)",
+                fontSize: "0.85rem",
+              }}
+            >
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", backgroundColor: isConnected ? "#28a745" : "#dc3545" }} />
+              {isConnected ? t("app.networkOnline") : t("app.networkOffline")}
+            </div>
+          )}
           <button className="theme-toggle" onClick={toggleLang} aria-label="Switch language">
             {i18n.language === "en" ? "ES" : "EN"}
           </button>

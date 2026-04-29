@@ -81,3 +81,19 @@ export function validateStellarAddress(address: string): void {
     throw new Error(`InvalidAddress: "${address}" is not a valid Stellar address`);
   }
 }
+
+/**
+ * Checks if the RPC connection is healthy.
+ * Returns false on any network or server error without throwing.
+ *
+ * @param server - SorobanRpc.Server instance
+ * @returns Promise<boolean> - true if connection is healthy, false otherwise
+ */
+export async function checkConnection(server: SorobanRpc.Server): Promise<boolean> {
+  try {
+    await server.getLatestLedger();
+    return true;
+  } catch {
+    return false;
+  }
+}

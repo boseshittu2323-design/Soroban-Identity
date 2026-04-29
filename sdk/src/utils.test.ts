@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { validateStellarAddress } from "./utils";
+import { validateStellarAddress, checkConnection } from "./utils";
 
 vi.mock("@stellar/stellar-sdk", () => ({
   StrKey: {
@@ -29,5 +29,30 @@ describe("validateStellarAddress", () => {
 
   it("error message includes the invalid address", () => {
     expect(() => validateStellarAddress("bad")).toThrow('"bad"');
+  });
+});
+
+describe("checkConnection", () => {
+  it("returns true when getLatestLedger succeeds", async () => {
+    const mockServer = {
+      getLatestLedger: vi.fn().mockResolvedValue({ ledger_sequence: 123 }),
+    };
+    const result = await checkConnection(mockServer as any);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when getLatestLedger throws an error", async () => {
+    const mockServer = {
+      getLatestLedger: vi.fn().mockRejectedValue(new Error("Network error")),
+    };
+    const result = await checkConnection(mockServer as any);
+    expect(result).toBe(false);
+  });
+
+  it("does not throw on network error", async () => {
+    const mockServer = {
+      getLatestLedger: vi.fn().mockRejectedValue(new Error("Connection timeout")),
+    };
+    await expect(checkConnection(mockServer as any)).resolves.toBe(false);
   });
 });

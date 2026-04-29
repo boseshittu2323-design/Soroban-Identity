@@ -2,7 +2,7 @@ export { IdentityClient } from "./identity";
 export { CredentialClient } from "./credentials";
 export { ReputationClient } from "./reputation";
 export { SorobanEventListener } from "./events";
-export { retryWithBackoff, validateStellarAddress } from "./utils";
+export { retryWithBackoff, checkConnection, validateStellarAddress } from "./utils";
 export type {
   DidDocument,
   Credential,

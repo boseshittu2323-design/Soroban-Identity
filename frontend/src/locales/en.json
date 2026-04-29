@@ -3,7 +3,9 @@
     "title": "Soroban Identity",
     "subtitle": "Decentralized Identity for a Trustless World",
     "lightMode": "☀ Light",
-    "darkMode": "☾ Dark"
+    "darkMode": "☾ Dark",
+    "networkOnline": "Network OK",
+    "networkOffline": "Network Error"
   },
   "tabs": {
     "identity": "Identity (DID)",
