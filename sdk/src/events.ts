@@ -1,7 +1,7 @@
-import { SorobanRpc } from "@stellar/stellar-sdk";
+import { SorobanRpc, Contract, xdr, scValToNative } from '@stellar/stellar-sdk';
 
 export interface EventFilter {
-  topic?: string[];
+  topic?: string[][];
   contractId?: string;
 }
 
@@ -19,7 +19,7 @@ export class SorobanEventListener {
   private contractId: string;
   private filter?: EventFilter;
   private isRunning = false;
-  private intervalId?: NodeJS.Timeout;
+  private intervalId?: ReturnType<typeof setInterval>;
   private lastLedger = 0;
 
   constructor(rpcUrl: string, contractId: string, filter?: EventFilter) {
@@ -33,10 +33,7 @@ export class SorobanEventListener {
    * @param callback Function called with matching events
    * @param intervalMs Polling interval in milliseconds (default: 5000)
    */
-  start(
-    callback: (events: ContractEvent[]) => void,
-    intervalMs = 5000
-  ): void {
+  start(callback: (events: ContractEvent[]) => void, intervalMs = 5000): void {
     if (this.isRunning) return;
     this.isRunning = true;
 
@@ -46,7 +43,7 @@ export class SorobanEventListener {
           startLedger: this.lastLedger || undefined,
           filters: [
             {
-              type: "contract",
+              type: 'contract',
               contractIds: [this.contractId],
               topics: this.filter?.topic,
             },
@@ -66,7 +63,7 @@ export class SorobanEventListener {
           }
         }
       } catch (error) {
-        console.error("Error polling events:", error);
+        console.error('Error polling events:', error);
       }
     };
 
@@ -92,11 +89,23 @@ export class SorobanEventListener {
     event: SorobanRpc.Api.EventResponse
   ): ContractEvent | null {
     try {
-      if (event.type !== "contract") return null;
+      if (event.type !== 'contract') return null;
 
-      const contractId = event.contractId || "";
-      const topic = event.topic || [];
-      const value = event.value || {};
+      const contractId =
+        typeof event.contractId === 'string'
+          ? event.contractId
+          : (event.contractId as Contract).contractId();
+
+      const topic = Array.isArray(event.topic)
+        ? (event.topic as xdr.ScVal[]).map((t) =>
+            JSON.stringify(scValToNative(t))
+          )
+        : [];
+
+      const value =
+        event.value instanceof xdr.ScVal
+          ? (scValToNative(event.value) as Record<string, unknown>)
+          : {};
 
       return {
         type: event.type,

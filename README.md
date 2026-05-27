@@ -22,21 +22,25 @@ Soroban Identity fixes this by providing a **privacy-preserving identity layer**
 ## Core Features
 
 **Decentralized Identity (DID)**
+
 - Wallet-linked identity profiles using the `did:stellar:` method
 - Unique on-chain identifiers, W3C DID-compatible
 - Portable across multiple dApps
 
 **Verifiable Credentials**
+
 - KYC verification badges issued by trusted entities
 - Proof of reputation, activity, or achievements
 - Cryptographic attestations stored on-chain
 
 **Privacy-Preserving Verification**
+
 - Selective disclosure of identity data
 - Permission-based access to credentials
 - Zero-knowledge proof (ZKP) integration — future-ready
 
 **Reputation Layer**
+
 - On-chain activity scoring via trusted reporters
 - Anti-sybil mechanisms with configurable thresholds
 - Trust signals for marketplaces, DAOs, and DeFi
@@ -67,41 +71,41 @@ soroban-identity/
 
 Manages W3C-aligned DID documents on-chain.
 
-| Function | Description |
-|---|---|
-| `initialize(admin)` | One-time setup |
+| Function                           | Description                 |
+| ---------------------------------- | --------------------------- |
+| `initialize(admin)`                | One-time setup              |
 | `create_did(controller, metadata)` | Mint a new DID for a wallet |
-| `update_did(controller, metadata)` | Update DID metadata |
-| `deactivate_did(controller)` | Soft-delete a DID |
-| `resolve_did(controller)` | Fetch a full DID document |
-| `has_active_did(controller)` | Boolean active check |
+| `update_did(controller, metadata)` | Update DID metadata         |
+| `deactivate_did(controller)`       | Soft-delete a DID           |
+| `resolve_did(controller)`          | Fetch a full DID document   |
+| `has_active_did(controller)`       | Boolean active check        |
 
 ### `credential-manager`
 
 Issues and verifies verifiable credentials.
 
-| Function | Description |
-|---|---|
-| `initialize(admin)` | One-time setup |
-| `add_issuer(issuer)` | Register a trusted issuer (admin only) |
-| `remove_issuer(issuer)` | Remove an issuer (admin only) |
-| `issue_credential(issuer, subject, type, claims, sig, expires)` | Issue a credential |
-| `revoke_credential(issuer, id)` | Revoke a credential |
-| `verify_credential(id)` | Check if a credential is valid and not expired |
-| `get_credential(id)` | Fetch full credential data |
+| Function                                                        | Description                                    |
+| --------------------------------------------------------------- | ---------------------------------------------- |
+| `initialize(admin)`                                             | One-time setup                                 |
+| `add_issuer(issuer)`                                            | Register a trusted issuer (admin only)         |
+| `remove_issuer(issuer)`                                         | Remove an issuer (admin only)                  |
+| `issue_credential(issuer, subject, type, claims, sig, expires)` | Issue a credential                             |
+| `revoke_credential(issuer, id)`                                 | Revoke a credential                            |
+| `verify_credential(id)`                                         | Check if a credential is valid and not expired |
+| `get_credential(id)`                                            | Fetch full credential data                     |
 
 ### `reputation`
 
 On-chain activity scoring and anti-sybil layer.
 
-| Function | Description |
-|---|---|
-| `initialize(admin)` | One-time setup |
-| `add_reporter(reporter)` | Register a trusted reporter (admin only) |
-| `submit_score(reporter, subject, delta, reason)` | Submit a score delta |
-| `get_reputation(subject)` | Get aggregated reputation record |
-| `get_history(subject, reporter)` | Get score history from a reporter |
-| `passes_sybil_check(subject, min_score, min_reporters)` | Anti-sybil gate |
+| Function                                                | Description                              |
+| ------------------------------------------------------- | ---------------------------------------- |
+| `initialize(admin)`                                     | One-time setup                           |
+| `add_reporter(reporter)`                                | Register a trusted reporter (admin only) |
+| `submit_score(reporter, subject, delta, reason)`        | Submit a score delta                     |
+| `get_reputation(subject)`                               | Get aggregated reputation record         |
+| `get_history(subject, reporter)`                        | Get score history from a reporter        |
+| `passes_sybil_check(subject, min_score, min_reporters)` | Anti-sybil gate                          |
 
 ---
 
@@ -112,6 +116,7 @@ did:stellar:<bech32-stellar-address>
 ```
 
 Example:
+
 ```
 did:stellar:GABC1234XYZ...
 ```
@@ -136,11 +141,13 @@ Issuer                    Subject                  Verifier
 ## TypeScript SDK
 
 Install:
+
 ```bash
 cd sdk && npm install
 ```
 
 Usage:
+
 ```ts
 import {
   IdentityClient,
@@ -172,11 +179,19 @@ const doc = await identity.resolveDid("GABC...");
 
 // Verify a credential
 const credentials = new CredentialClient(config);
-const valid = await credentials.verifyCredential("GABC...", "credential-id-hex");
+const valid = await credentials.verifyCredential(
+  "GABC...",
+  "credential-id-hex",
+);
 
 // Check reputation / anti-sybil
 const reputation = new ReputationClient(config);
-const passes = await reputation.passesSybilCheck("GABC...", "GSUBJECT...", 50, 2);
+const passes = await reputation.passesSybilCheck(
+  "GABC...",
+  "GSUBJECT...",
+  50,
+  2,
+);
 ```
 
 ---
@@ -192,6 +207,7 @@ npm run dev
 ```
 
 Features:
+
 - Connect Freighter wallet
 - Resolve any DID by Stellar address
 - Create your own on-chain DID
@@ -251,9 +267,47 @@ bash scripts/deploy.sh
 ```
 
 **Environment Variables:**
+
 - `STELLAR_NETWORK` — Network name (default: `testnet`). Can be `testnet`, `mainnet`, or a custom network name.
 - `STELLAR_RPC_URL` — RPC endpoint URL (default: `https://soroban-testnet.stellar.org`).
 - `STELLAR_SECRET_KEY` — Your Stellar secret key (required). Used to sign transactions and deploy contracts.
+
+### Retry Behavior
+
+The deploy script includes automatic retry with exponential backoff for transient RPC failures (e.g., 503 errors or timeouts):
+
+- **Default max retries:** 3 attempts
+- **Initial delay:** 2 seconds
+- **Backoff:** Delay doubles after each failed attempt (2s → 4s → 8s)
+
+You can configure retry behavior via environment variables:
+
+```bash
+# Use default retry settings
+export STELLAR_SECRET_KEY=S...
+bash scripts/deploy.sh
+
+# Increase max retries for unstable networks
+export STELLAR_SECRET_KEY=S...
+export MAX_RETRIES=5
+bash scripts/deploy.sh
+
+# Increase initial delay for slower networks
+export STELLAR_SECRET_KEY=S...
+export RETRY_DELAY=5
+bash scripts/deploy.sh
+
+# Custom retry configuration
+export STELLAR_SECRET_KEY=S...
+export MAX_RETRIES=4
+export RETRY_DELAY=3
+bash scripts/deploy.sh
+```
+
+**Retry Environment Variables:**
+
+- `MAX_RETRIES` — Maximum number of retry attempts (default: `3`)
+- `RETRY_DELAY` — Initial delay in seconds before first retry (default: `2`)
 
 ---
 
