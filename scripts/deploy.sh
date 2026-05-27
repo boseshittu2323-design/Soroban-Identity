@@ -7,12 +7,39 @@ STELLAR_NETWORK="${STELLAR_NETWORK:-testnet}"
 STELLAR_RPC_URL="${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}"
 SOURCE_ACCOUNT="${STELLAR_SECRET_KEY:?Set STELLAR_SECRET_KEY}"
 
+# Retry configuration with exponential backoff
+MAX_RETRIES="${MAX_RETRIES:-3}"
+RETRY_DELAY="${RETRY_DELAY:-2}"
+
+# Retry function with exponential backoff
+retry_command() {
+  local max_attempts="$MAX_RETRIES"
+  local delay="$RETRY_DELAY"
+  local attempt=1
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    echo "Attempt $attempt/$max_attempts..."
+    if "$@"; then
+      return 0
+    fi
+    echo "Failed. Retrying in ${delay}s..."
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+  done
+
+  echo "All attempts failed."
+  return 1
+}
+
 # Print active network
 echo "========================================"
 echo "  Deployment Configuration"
 echo "========================================"
 echo "  Network:  $STELLAR_NETWORK"
 echo "  RPC URL:  $STELLAR_RPC_URL"
+echo "  Max Retries:  $MAX_RETRIES"
+echo "  Initial Retry Delay:  ${RETRY_DELAY}s"
 echo "========================================"
 echo ""
 
@@ -24,7 +51,7 @@ CREDENTIAL_WASM="contracts/target/wasm32-unknown-unknown/release/credential_mana
 REPUTATION_WASM="contracts/target/wasm32-unknown-unknown/release/reputation.wasm"
 
 echo "==> Deploying identity-registry..."
-REGISTRY_ID=$(stellar contract deploy \
+REGISTRY_ID=$(retry_command stellar contract deploy \
   --wasm "$REGISTRY_WASM" \
   --source "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
@@ -32,7 +59,7 @@ REGISTRY_ID=$(stellar contract deploy \
 echo "identity-registry: $REGISTRY_ID"
 
 echo "==> Deploying credential-manager..."
-CREDENTIAL_ID=$(stellar contract deploy \
+CREDENTIAL_ID=$(retry_command stellar contract deploy \
   --wasm "$CREDENTIAL_WASM" \
   --source "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
@@ -40,7 +67,7 @@ CREDENTIAL_ID=$(stellar contract deploy \
 echo "credential-manager: $CREDENTIAL_ID"
 
 echo "==> Deploying reputation..."
-REPUTATION_ID=$(stellar contract deploy \
+REPUTATION_ID=$(retry_command stellar contract deploy \
   --wasm "$REPUTATION_WASM" \
   --source "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
@@ -50,21 +77,21 @@ echo "reputation: $REPUTATION_ID"
 echo "==> Initializing contracts..."
 ADMIN_ADDRESS=$(stellar keys address "$SOURCE_ACCOUNT" --network "$STELLAR_NETWORK")
 
-stellar contract invoke \
+retry_command stellar contract invoke \
   --id "$REGISTRY_ID" \
   --source "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
   --rpc-url "$STELLAR_RPC_URL" \
   -- initialize --admin "$ADMIN_ADDRESS"
 
-stellar contract invoke \
+retry_command stellar contract invoke \
   --id "$CREDENTIAL_ID" \
   --source "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
   --rpc-url "$STELLAR_RPC_URL" \
   -- initialize --admin "$ADMIN_ADDRESS"
 
-stellar contract invoke \
+retry_command stellar contract invoke \
   --id "$REPUTATION_ID" \
   --source "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
