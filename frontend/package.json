@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@creit.tech/stellar-wallets-kit": "^0.9.5",
     "@soroban-identity/sdk": "file:../sdk",
     "@stellar/stellar-sdk": "^12.0.0",
     "@walletconnect/sign-client": "^2.17.0",
