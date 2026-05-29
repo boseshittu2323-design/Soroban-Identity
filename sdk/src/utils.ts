@@ -1,4 +1,5 @@
-import { StrKey, SorobanRpc } from "@stellar/stellar-sdk";
+import { StrKey, SorobanRpc, hash } from "@stellar/stellar-sdk";
+import type { CredentialType } from "./types";
 
 /**
  * Retries an async function with exponential backoff on transient network errors.
@@ -96,4 +97,19 @@ export async function checkConnection(server: SorobanRpc.Server): Promise<boolea
   } catch {
     return false;
   }
+}
+
+/**
+ * Deterministically computes a credential ID from issuer, subject, and type.
+ * Mirrors the derivation used by the credential-manager contract.
+ *
+ * @returns 64-character hex string (32-byte SHA-256 hash)
+ */
+export function computeCredentialId(
+  issuer: string,
+  subject: string,
+  credentialType: CredentialType
+): string {
+  const input = [issuer, subject, credentialType].join(":");
+  return Buffer.from(hash(Buffer.from(input))).toString("hex");
 }

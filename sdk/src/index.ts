@@ -7,7 +7,9 @@ export {
   retryWithBackoff,
   checkConnection,
   validateStellarAddress,
+  computeCredentialId,
 } from './utils';
+export { clearServerCache } from './base-client';
 export type {
   DidDocument,
   Credential,

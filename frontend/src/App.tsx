@@ -6,8 +6,9 @@ import CredentialsPanel from "./components/CredentialsPanel";
 import WalletButton from "./components/WalletButton";
 import { useWallet } from "./hooks/useWallet";
 import { useCredentialExpiryCheck } from "./hooks/useCredentialExpiryCheck";
-import { checkConnection, TESTNET_CONFIG } from "../../sdk/src/index";
+import { checkConnection, TESTNET_CONFIG, IdentityClient, CredentialClient, ReputationClient } from "../../sdk/src/index";
 import { getAppConfig } from "./config";
+import { getActiveNetwork, getNetworkConfig, isMainnet } from "./network";
 import type { Credential } from "../../sdk/src/types";
 
 type Tab = "identity" | "credentials";
@@ -36,6 +37,7 @@ export default function App() {
   const [isDark, toggleDark] = useDarkMode();
   const { t, i18n } = useTranslation();
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
+  const [uninitializedContracts, setUninitializedContracts] = useState<string[]>([]);
 
   // Check for verify query param on load
   useEffect(() => {
@@ -60,6 +62,27 @@ export default function App() {
       setIsConnected(healthy);
     };
     checkRpcHealth();
+  }, [networkConfig.rpcUrl]);
+
+  // Check contract initialization on load
+  useEffect(() => {
+    const checkInit = async () => {
+      const config = getAppConfig();
+      const identity = new IdentityClient(config);
+      const credentials = new CredentialClient(config);
+      const reputation = new ReputationClient(config);
+      const [idOk, credOk, repOk] = await Promise.all([
+        identity.isInitialized(),
+        credentials.isInitialized(),
+        reputation.isInitialized(),
+      ]);
+      const uninitialized: string[] = [];
+      if (!idOk) uninitialized.push("Identity Registry");
+      if (!credOk) uninitialized.push("Credential Manager");
+      if (!repOk) uninitialized.push("Reputation");
+      setUninitializedContracts(uninitialized);
+    };
+    checkInit();
   }, [networkConfig.rpcUrl]);
 
   // Mock fetch — replace with CredentialClient.getCredentialsBySubject() when wired
@@ -157,6 +180,33 @@ export default function App() {
           <WalletButton wallet={wallet} />
         </div>
       </header>
+
+      {uninitializedContracts.length > 0 && (
+        <div
+          role="alert"
+          aria-label="Contract not initialized warning"
+          style={{
+            background: "var(--warning-bg, #fff3cd)",
+            color: "var(--warning-text, #856404)",
+            border: "1px solid var(--warning-border, #ffc107)",
+            borderRadius: "0.5rem",
+            padding: "0.6rem 1rem",
+            marginBottom: "1rem",
+            fontSize: "0.9rem",
+          }}
+        >
+          ⚠ Contract not initialized: <strong>{uninitializedContracts.join(", ")}</strong>.
+          Please run the deploy script and update your contract IDs.{" "}
+          <a
+            href="docs/architecture.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "inherit", textDecoration: "underline" }}
+          >
+            Deployment guide
+          </a>
+        </div>
+      )}
 
       {onMainnet && (
         <div
