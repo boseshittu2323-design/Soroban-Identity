@@ -28,6 +28,8 @@ pub enum ContractError {
     ReporterNotFound = 2,
     RateLimitExceeded = 3,
     ReasonTooLong = 4,
+    NotInitialized = 5,
+    Unauthorized = 6,
 }
 
 /// Minimum ledger interval between submissions from the same reporter for the same subject.
@@ -110,37 +112,39 @@ impl Reputation {
     /// * `current_admin` - The current admin address (must sign the transaction).
     /// * `new_admin` - The address to transfer admin rights to.
     ///
-    /// # Panics
-    /// Panics if `current_admin` does not match the stored admin address.
-    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+    /// # Errors
+    /// Returns [`ContractError::Unauthorized`] if `current_admin` does not match the stored admin address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), ContractError> {
         current_admin.require_auth();
         let stored: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         if stored != current_admin {
-            panic!("not the admin");
+            return Err(ContractError::Unauthorized);
         }
         env.storage().instance().set(&ADMIN, &new_admin);
         env.events().publish(
             (ADMIN, symbol_short!("transfer")),
             (current_admin, new_admin),
         );
+        Ok(())
     }
 
     /// Upgrade the contract WASM. Only the admin can call this.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         admin.require_auth();
         let stored: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         if stored != admin {
-            panic!("not the admin");
+            return Err(ContractError::Unauthorized);
         }
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 
     /// Registers a trusted reporter (admin only).
@@ -151,8 +155,8 @@ impl Reputation {
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `reporter` - The address to register as a trusted reporter.
-    pub fn add_reporter(env: Env, reporter: Address) {
-        Self::require_admin(&env);
+    pub fn add_reporter(env: Env, reporter: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let mut reporters = Self::get_reporters(&env);
         if !reporters.contains(&reporter) {
             reporters.push_back(reporter.clone());
@@ -173,8 +177,8 @@ impl Reputation {
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `reporter` - The reporter address to remove.
-    pub fn remove_reporter(env: Env, reporter: Address) {
-        Self::require_admin(&env);
+    pub fn remove_reporter(env: Env, reporter: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let reporters = Self::get_reporters(&env);
         let mut updated = Vec::new(&env);
         for r in reporters.iter() {
@@ -187,6 +191,7 @@ impl Reputation {
             (REPORTER, symbol_short!("removed")),
             (reporter, env.ledger().timestamp()),
         );
+        Ok(())
     }
 
     /// Sets the default sybil threshold used by [`Self::passes_sybil_check_default`].
@@ -198,8 +203,8 @@ impl Reputation {
     /// * `env` - The Soroban environment.
     /// * `min_score` - Minimum accumulated score a subject must have.
     /// * `min_reporters` - Minimum number of distinct active reporters required.
-    pub fn set_default_threshold(env: Env, min_score: i64, min_reporters: u32) {
-        Self::require_admin(&env);
+    pub fn set_default_threshold(env: Env, min_score: i64, min_reporters: u32) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(
             &DEF_THRESH,
             &DefaultThreshold {
@@ -207,6 +212,7 @@ impl Reputation {
                 min_reporters,
             },
         );
+        Ok(())
     }
 
     /// Anti-sybil check using the admin-configured default threshold.
@@ -225,12 +231,12 @@ impl Reputation {
     ///
     /// # Panics
     /// Panics if no default threshold has been set via [`Self::set_default_threshold`].
-    pub fn passes_sybil_check_default(env: Env, subject: Address) -> bool {
+    pub fn passes_sybil_check_default(env: Env, subject: Address) -> Result<bool, ContractError> {
         let threshold: DefaultThreshold = env
             .storage()
             .instance()
             .get(&DEF_THRESH)
-            .expect("default threshold not set");
+            .ok_or(ContractError::NotInitialized)?;
         let key = Self::record_key(&subject);
         match env
             .storage()
@@ -239,7 +245,7 @@ impl Reputation {
         {
             None => false,
             Some(rec) => {
-                rec.score >= threshold.min_score && rec.reporter_count >= threshold.min_reporters
+                Ok(rec.score >= threshold.min_score && rec.reporter_count >= threshold.min_reporters)
             }
         }
     }
@@ -276,7 +282,7 @@ impl Reputation {
         reason: soroban_sdk::String,
     ) -> Result<(), ContractError> {
         reporter.require_auth();
-        Self::require_reporter(&env, &reporter);
+        Self::require_reporter(&env, &reporter)?;
 
         // Validate reason string length
         if reason.len() > 256 {
@@ -498,19 +504,21 @@ impl Reputation {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn require_admin(env: &Env) {
+    fn require_admin(env: &Env) -> Result<(), ContractError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
+        Ok(())
     }
 
-    fn require_reporter(env: &Env, reporter: &Address) {
+    fn require_reporter(env: &Env, reporter: &Address) -> Result<(), ContractError> {
         if !Self::get_reporters(env).contains(reporter) {
-            panic!("not a registered reporter");
+            return Err(ContractError::ReporterNotFound);
         }
+        Ok(())
     }
 
     fn get_reporters(env: &Env) -> Vec<Address> {

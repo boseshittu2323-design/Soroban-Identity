@@ -25,6 +25,10 @@ pub enum ContractError {
     CredentialNotFound = 3,
     CredentialRevoked = 4,
     CredentialAlreadyExists = 5,
+    NotInitialized = 6,
+    Unauthorized = 7,
+    MaxIssuersReached = 8,
+    CredentialExpired = 9,
 }
 
 /// ~1 year in ledgers (5-second ledger close time). Used as the max TTL cap.
@@ -115,23 +119,24 @@ impl CredentialManager {
     /// * `current_admin` - The current admin address (must sign the transaction).
     /// * `new_admin` - The address to transfer admin rights to.
     ///
-    /// # Panics
-    /// Panics if `current_admin` does not match the stored admin address.
-    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+    /// # Errors
+    /// Returns [`ContractError::Unauthorized`] if `current_admin` does not match the stored admin address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), ContractError> {
         current_admin.require_auth();
         let stored: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         if stored != current_admin {
-            panic!("not the admin");
+            return Err(ContractError::Unauthorized);
         }
         env.storage().instance().set(&ADMIN, &new_admin);
         env.events().publish(
             (ADMIN, symbol_short!("transfer")),
             (current_admin, new_admin),
         );
+        Ok(())
     }
 
     /// Upgrades the contract WASM to a new hash. Only the admin can call this.
@@ -141,19 +146,20 @@ impl CredentialManager {
     /// * `admin` - The admin address (must sign the transaction).
     /// * `new_wasm_hash` - The hash of the new WASM binary to upgrade to.
     ///
-    /// # Panics
-    /// Panics if `admin` does not match the stored admin address.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: Bytes) {
+    /// # Errors
+    /// Returns [`ContractError::Unauthorized`] if `admin` does not match the stored admin address.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: Bytes) -> Result<(), ContractError> {
         admin.require_auth();
         let stored: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         if stored != admin {
-            panic!("not the admin");
+            return Err(ContractError::Unauthorized);
         }
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 
     /// Registers a trusted issuer (admin only).
@@ -167,18 +173,19 @@ impl CredentialManager {
     ///
     /// # Panics
     /// Panics with `"MaxIssuersReached"` if the issuer cap has been reached.
-    pub fn add_issuer(env: Env, issuer: Address) {
+    pub fn add_issuer(env: Env, issuer: Address) -> Result<(), ContractError> {
         Self::require_admin(&env);
         let mut issuers = Self::get_issuers_internal(&env);
         if !issuers.contains(&issuer) {
             if issuers.len() >= MAX_ISSUERS {
-                panic!("MaxIssuersReached");
+                return Err(ContractError::MaxIssuersReached);
             }
             issuers.push_back(issuer.clone());
             env.storage().instance().set(&ISSUER, &issuers);
             env.events()
                 .publish((ISSUER, symbol_short!("added")), issuer);
         }
+        Ok(())
     }
 
     /// Removes a trusted issuer (admin only).
@@ -189,8 +196,8 @@ impl CredentialManager {
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `issuer` - The issuer address to remove.
-    pub fn remove_issuer(env: Env, issuer: Address) {
-        Self::require_admin(&env);
+    pub fn remove_issuer(env: Env, issuer: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let issuers = Self::get_issuers_internal(&env);
         let mut updated = Vec::new(&env);
         for i in issuers.iter() {
@@ -199,6 +206,7 @@ impl CredentialManager {
             }
         }
         env.storage().instance().set(&ISSUER, &updated);
+        Ok(())
     }
 
     // ── Credential lifecycle ──────────────────────────────────────────────────
@@ -243,12 +251,12 @@ impl CredentialManager {
         expires_at: u64,
     ) -> Result<BytesN<32>, ContractError> {
         issuer.require_auth();
-        Self::require_issuer(&env, &issuer);
+        Self::require_issuer(&env, &issuer)?;
 
         let now = env.ledger().timestamp();
 
         if expires_at != 0 && expires_at <= now {
-            panic!("CredentialAlreadyExpired");
+            return Err(ContractError::CredentialExpired);
         }
 
         // Deterministic ID: sha256(issuer_bytes || subject_bytes || type_tag)
@@ -479,20 +487,22 @@ impl CredentialManager {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn require_admin(env: &Env) {
+    fn require_admin(env: &Env) -> Result<(), ContractError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
+        Ok(())
     }
 
-    fn require_issuer(env: &Env, issuer: &Address) {
+    fn require_issuer(env: &Env, issuer: &Address) -> Result<(), ContractError> {
         let issuers = Self::get_issuers_internal(env);
         if !issuers.contains(issuer) {
-            panic!("not a registered issuer");
+            return Err(ContractError::UnauthorizedIssuer);
         }
+        Ok(())
     }
 
     fn get_issuers_internal(env: &Env) -> Vec<Address> {

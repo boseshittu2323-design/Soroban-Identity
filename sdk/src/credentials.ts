@@ -23,7 +23,8 @@ export class CredentialClient extends BaseClient {
   /** Returns true if the credential-manager contract has been initialized. */
   async isInitialized(): Promise<boolean> {
     try {
-      const account = await this.server.getAccount(PROBE_ADDRESS);
+      return await this.executeWithFailover(async (server) => {
+        const account = await server.getAccount(PROBE_ADDRESS);
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.config.networkPassphrase,
@@ -36,14 +37,15 @@ export class CredentialClient extends BaseClient {
         )
         .setTimeout(10)
         .build();
-      const result = await this.server.simulateTransaction(tx);
-      if (SorobanRpc.Api.isSimulationError(result)) {
-        const err: string = (result as { error: string }).error ?? "";
-        if (err.includes("not initialized") || err.includes("NotInitialized") || err.includes("#0")) {
-          return false;
+        const result = await server.simulateTransaction(tx);
+        if (SorobanRpc.Api.isSimulationError(result)) {
+          const err: string = (result as { error: string }).error ?? "";
+          if (err.includes("not initialized") || err.includes("NotInitialized") || err.includes("#0")) {
+            return false;
+          }
         }
-      }
-      return true;
+        return true;
+      });
     } catch {
       return false;
     }

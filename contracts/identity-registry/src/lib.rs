@@ -15,6 +15,9 @@ pub enum ContractError {
     MetadataTooLong = 3,
     AlreadyInitialized = 4,
     EmptyMetadata = 5,
+    Unauthorized = 6,
+    DidAlreadyExists = 7,
+    NotInitialized = 8,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -92,9 +95,9 @@ impl IdentityRegistry {
     /// * `current_admin` - The current admin address (must sign the transaction).
     /// * `new_admin` - The address to transfer admin rights to.
     ///
-    /// # Panics
-    /// Panics if `current_admin` does not match the stored admin address.
-    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+    /// # Errors
+    /// Returns [`ContractError::Unauthorized`] if `current_admin` does not match the stored admin address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), ContractError> {
         current_admin.require_auth();
         let stored: Address = env
             .storage()
@@ -118,19 +121,20 @@ impl IdentityRegistry {
     /// * `admin` - The admin address (must sign the transaction).
     /// * `new_wasm_hash` - The 32-byte hash of the new WASM binary to upgrade to.
     ///
-    /// # Panics
-    /// Panics if `admin` does not match the stored admin address.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+    /// # Errors
+    /// Returns [`ContractError::Unauthorized`] if `admin` does not match the stored admin address.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         admin.require_auth();
         let stored: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
         if stored != admin {
-            panic!("not the admin");
+            return Err(ContractError::Unauthorized);
         }
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 
     // ── DID management ────────────────────────────────────────────────────────
@@ -167,12 +171,12 @@ impl IdentityRegistry {
         let key = Self::did_key(&env, &controller);
 
         if storage.has(&key) {
-            panic!("DID already exists for this address");
+            return Err(ContractError::DidAlreadyExists);
         }
 
         Self::validate_metadata(&metadata)?;
 
-        let did_id = Self::build_did_id(&env, &controller);
+        let did_id = Self::build_did_id(&env, &controller)?;
         let now = env.ledger().timestamp();
 
         let doc = DidDocument {
@@ -233,7 +237,7 @@ impl IdentityRegistry {
 
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
+        let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
 
         doc.metadata = metadata;
         doc.updated_at = env.ledger().timestamp();
@@ -265,12 +269,12 @@ impl IdentityRegistry {
     ///
     /// # Panics
     /// Panics with `"DID not found"` if no DID exists for the given controller.
-    pub fn deactivate_did(env: Env, controller: Address) {
+    pub fn deactivate_did(env: Env, controller: Address) -> Result<(), ContractError> {
         controller.require_auth();
 
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
+        let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
 
         doc.active = false;
         doc.updated_at = env.ledger().timestamp();
@@ -288,6 +292,7 @@ impl IdentityRegistry {
             (IDENTITY, symbol_short!("deact")),
             (controller, doc.updated_at),
         );
+        Ok(())
     }
 
     /// Resolves a DID document by controller address.
@@ -377,7 +382,7 @@ impl IdentityRegistry {
         key
     }
 
-    fn build_did_id(env: &Env, controller: &Address) -> String {
+    fn build_did_id(env: &Env, controller: &Address) -> Result<String, ContractError> {
         // did:stellar:<bech32-address>
         let prefix = String::from_str(env, "did:stellar:");
         let addr_str = controller.to_string();
@@ -387,10 +392,10 @@ impl IdentityRegistry {
 
         // Validate the format
         if !Self::validate_did_format(env, &did) {
-            panic!("Invalid DID format constructed");
+            return Err(ContractError::DidNotFound); // Use existing error for invalid format
         }
 
-        did
+        Ok(did)
     }
 
     fn validate_did_format(env: &Env, did: &String) -> bool {

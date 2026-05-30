@@ -41,13 +41,17 @@ export interface ScoreHistoryEntry {
 
 export class ReputationClient extends BaseClient {
   constructor(config: SorobanIdentityConfig) {
+    if (!config.reputationId) {
+      throw new Error('reputationId is required for ReputationClient');
+    }
     super(config, config.reputationId);
   }
 
   /** Returns true if the reputation contract has been initialized. */
   async isInitialized(): Promise<boolean> {
     try {
-      const account = await this.server.getAccount(PROBE_ADDRESS);
+      return await this.executeWithFailover(async (server) => {
+        const account = await server.getAccount(PROBE_ADDRESS);
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.config.networkPassphrase,

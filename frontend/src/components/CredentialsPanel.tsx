@@ -1,4 +1,5 @@
 import { useState, useEffect, useReducer } from "react";
+import { StrKey } from '@stellar/stellar-sdk';
 import type { CredentialType } from "../../../sdk/src/types";
 import { validateStellarAddress } from "../../../sdk/src/utils";
 import SkeletonCard from "./SkeletonCard";
@@ -227,6 +228,16 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
   const handleSearch = async () => {
     const addr = searchAddress.trim();
     if (!addr) return;
+    
+    // Validate Stellar address format
+    if (!StrKey.isValidEd25519PublicKey(addr)) {
+      dispatchCredential({ 
+        type: 'FETCH_ERROR', 
+        message: 'Invalid Stellar address format. Address must start with "G" and be 56 characters long.'
+      });
+      return;
+    }
+    
     dispatchCredential({ type: 'FETCH_START' });
     try {
       // TODO: wire CredentialClient.getCredentialsBySubject() from SDK
@@ -245,12 +256,8 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     // Validate subject address
     if (!subject.trim()) {
       errors.subject = "Subject address is required";
-    } else {
-      try {
-        validateStellarAddress(subject);
-      } catch {
-        errors.subject = "Invalid Stellar address";
-      }
+    } else if (!StrKey.isValidEd25519PublicKey(subject.trim())) {
+      errors.subject = "Invalid Stellar address format. Address must start with 'G' and be 56 characters long.";
     }
 
     // Validate at least one claim

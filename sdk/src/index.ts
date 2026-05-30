@@ -3,6 +3,7 @@ export { CredentialClient } from './credentials';
 export { ReputationClient } from './reputation';
 export { SorobanEventListener } from './events';
 export { SorobanTransactionBuilder } from './transaction-builder';
+export { RequestQueue } from './request-queue';
 export {
   retryWithBackoff,
   checkConnection,
@@ -16,6 +17,7 @@ export {
   REPUTATION_ERRORS,
 } from './error-codes';
 export { clearServerCache } from './base-client';
+export { toW3CDidDocument, exportDidDocumentAsJsonLd } from './serializers';
 export type {
   DidDocument,
   Credential,
@@ -34,7 +36,7 @@ export type { SorobanIdentityConfig };
 
 // Testnet defaults — fill contract IDs after deployment
 export const TESTNET_CONFIG: SorobanIdentityConfig = {
-  rpcUrl: 'https://soroban-testnet.stellar.org',
+  rpcUrl: ['https://soroban-testnet.stellar.org', 'https://soroban-testnet-backup.stellar.org'],
   networkPassphrase: 'Test SDF Network ; September 2015',
   identityRegistryId: '',
   credentialManagerId: '',
@@ -43,7 +45,7 @@ export const TESTNET_CONFIG: SorobanIdentityConfig = {
 
 // Mainnet defaults — fill contract IDs after deployment
 export const MAINNET_CONFIG: SorobanIdentityConfig = {
-  rpcUrl: 'https://soroban-mainnet.stellar.org',
+  rpcUrl: ['https://soroban-mainnet.stellar.org', 'https://soroban-mainnet-backup.stellar.org'],
   networkPassphrase: 'Public Global Stellar Network ; September 2015',
   identityRegistryId: '',
   credentialManagerId: '',

@@ -30,13 +30,17 @@ export type VerifyResult =
   | { valid: false; reason: VerifyFailReason };
 
 export interface SorobanIdentityConfig {
-  rpcUrl: string;
+  rpcUrl: string | string[];
   networkPassphrase: string;
   identityRegistryId: string;
   credentialManagerId: string;
-  reputationId: string;
+  reputationId?: string;
   /** Transaction timeout in seconds. Defaults to 30. */
   txTimeout?: number;
+  /** Maximum concurrent RPC requests. Defaults to 5. */
+  maxConcurrentRequests?: number;
+  /** Request retry delay in ms. Defaults to 1000. */
+  retryDelay?: number;
 }
 
 /** Per-call options that override the global config. */
