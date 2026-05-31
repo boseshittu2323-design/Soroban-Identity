@@ -10,7 +10,18 @@ export {
   validateStellarAddress,
   computeCredentialId,
 } from './utils';
-export { ContractError } from './errors';
+export {
+  ContractError,
+  SorobanIdentityError,
+  classifyError,
+  wrapError,
+} from './errors';
+export type {
+  SorobanErrorCode,
+  SorobanIdentityErrorInit,
+} from './errors';
+// #249 / #252 / #253 / #254 — server-layer helpers.
+export * from './server';
 export {
   IDENTITY_REGISTRY_ERRORS,
   CREDENTIAL_MANAGER_ERRORS,
