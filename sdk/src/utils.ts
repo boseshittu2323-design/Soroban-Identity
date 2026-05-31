@@ -75,8 +75,11 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Validates a Stellar address using StrKey.
- * Throws an InvalidAddress error with a descriptive message if the address is invalid.
+ * Validates a Stellar address using `StrKey`.
+ *
+ * @param address The Stellar address (G…) to validate.
+ * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` when the address
+ *   is not a valid ed25519 public key.
  */
 export function validateStellarAddress(address: string): void {
   if (!StrKey.isValidEd25519PublicKey(address)) {
@@ -86,10 +89,12 @@ export function validateStellarAddress(address: string): void {
 
 /**
  * Checks if the RPC connection is healthy.
- * Returns false on any network or server error without throwing.
  *
- * @param server - SorobanRpc.Server instance
- * @returns Promise<boolean> - true if connection is healthy, false otherwise
+ * Returns `false` on any network or server error without throwing — useful for
+ * health probes that should never surface transport noise.
+ *
+ * @param server A {@link SorobanRpc.Server} instance to probe.
+ * @returns `true` when `getLatestLedger()` succeeds, `false` on any error.
  */
 export async function checkConnection(server: SorobanRpc.Server): Promise<boolean> {
   try {
@@ -102,9 +107,19 @@ export async function checkConnection(server: SorobanRpc.Server): Promise<boolea
 
 /**
  * Deterministically computes a credential ID from issuer, subject, and type.
- * Mirrors the derivation used by the credential-manager contract.
  *
- * @returns 64-character hex string (32-byte SHA-256 hash)
+ * Mirrors the derivation used by the credential-manager contract so a client
+ * can predict the ID before submitting `issue_credential`.
+ *
+ * @param issuer         Registered issuer Stellar address.
+ * @param subject        Subject Stellar address.
+ * @param credentialType Credential category — see {@link CredentialType}.
+ * @returns 64-character hex string (32-byte SHA-256 hash).
+ *
+ * @example
+ * ```ts
+ * const id = computeCredentialId(issuer, subject, 'Kyc');
+ * ```
  */
 export function computeCredentialId(
   issuer: string,

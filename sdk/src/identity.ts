@@ -16,7 +16,24 @@ import { BaseClient } from "./base-client";
 // Dummy address used for lightweight initialization probes
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 
+/**
+ * Client for the identity-registry contract.
+ *
+ * Manages decentralised identifiers (DIDs) on Soroban: creation, metadata
+ * updates, resolution, and deactivation. All methods accept an optional
+ * {@link CallOptions} for per-call overrides (e.g. transaction timeout).
+ *
+ * @example
+ * ```ts
+ * import { IdentityClient, TESTNET_CONFIG } from '@soroban-identity/sdk';
+ * const identity = new IdentityClient({ ...TESTNET_CONFIG, identityRegistryId: '...' });
+ * const { did } = await identity.createDid(keypair, { email: 'a@b.c' });
+ * ```
+ */
 export class IdentityClient extends BaseClient {
+  /**
+   * @param config SDK config including the deployed identity-registry contract ID.
+   */
   constructor(config: SorobanIdentityConfig) {
     super(config, config.identityRegistryId);
   }
@@ -57,7 +74,25 @@ export class IdentityClient extends BaseClient {
 
   /**
    * Create a new DID for the given keypair.
-   * Returns the DID string and the estimated transaction fee.
+   *
+   * Submits a `create_did` call to the identity-registry contract, signed by
+   * `keypair`, and polls until the transaction is final. The on-chain ID is
+   * derived from the keypair's public key.
+   *
+   * @param keypair  The Stellar keypair whose public key will own the DID.
+   *                 Must be funded on the active network.
+   * @param metadata Arbitrary `string → string` map embedded in the DID document.
+   *                 Defaults to `{}`.
+   * @param options  Per-call overrides (currently `timeoutSeconds`).
+   * @returns The resolved DID and the estimated transaction fee.
+   * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` if a DID already
+   *   exists for this address, or `CONTRACT_ERROR` for any other submission failure.
+   *
+   * @example
+   * ```ts
+   * const { did, estimatedFeeXlm } = await identity.createDid(keypair, { email: 'a@b.c' });
+   * console.log(`Issued ${did} for ~${estimatedFeeXlm} XLM`);
+   * ```
    */
   async createDid(
     keypair: Keypair,
@@ -112,6 +147,17 @@ export class IdentityClient extends BaseClient {
 
   /**
    * Update metadata on an existing DID.
+   *
+   * Replaces the DID document's metadata map. The caller must control the DID
+   * being modified — the contract calls `require_auth` on the keypair's address.
+   *
+   * @param keypair  Controller of the DID being updated. Must sign the transaction.
+   * @param metadata Replacement metadata map.
+   * @param options  Per-call overrides (currently `timeoutSeconds`).
+   * @returns Resolves once the transaction is final on-chain.
+   * @throws {SorobanIdentityError} with code `NOT_FOUND` if no DID exists for
+   *   `keypair`, `UNAUTHORIZED` if `keypair` is not the DID controller, or
+   *   `CONTRACT_ERROR` for any other submission failure.
    */
   async updateDid(
     keypair: Keypair,
@@ -165,6 +211,14 @@ export class IdentityClient extends BaseClient {
 
   /**
    * Resolve a DID document by controller address.
+   *
+   * Read-only simulation; no transaction is submitted.
+   *
+   * @param controllerAddress The Stellar address that controls the DID.
+   * @param options           Per-call overrides (currently `timeoutSeconds`).
+   * @returns The {@link DidDocument} for `controllerAddress`.
+   * @throws {SorobanIdentityError} with code `NOT_FOUND` if no DID exists or
+   *   `CONTRACT_ERROR` on simulation failure.
    */
   async resolveDid(controllerAddress: string, options?: CallOptions): Promise<DidDocument> {
     validateStellarAddress(controllerAddress);
@@ -205,7 +259,12 @@ export class IdentityClient extends BaseClient {
   }
 
   /**
-   * Check if an address has an active DID.
+   * Check if an address has an active (non-deactivated) DID.
+   *
+   * @param controllerAddress The Stellar address to check.
+   * @param options           Per-call overrides (currently `timeoutSeconds`).
+   * @returns `true` if a non-deactivated DID exists, `false` otherwise.
+   * @throws {SorobanIdentityError} on simulation failure.
    */
   async hasActiveDid(controllerAddress: string, options?: CallOptions): Promise<boolean> {
     validateStellarAddress(controllerAddress);
@@ -235,7 +294,14 @@ export class IdentityClient extends BaseClient {
   }
 
   /**
-   * Get the total count of active DIDs.
+   * Get the total count of active DIDs registered.
+   *
+   * Uses {@link PROBE_ADDRESS} for the read simulation so no specific caller
+   * account is required.
+   *
+   * @param options Per-call overrides (currently `timeoutSeconds`).
+   * @returns Total active DIDs across the registry.
+   * @throws {SorobanIdentityError} on simulation failure.
    */
   async getDidCount(options?: CallOptions): Promise<number> {
     const account = await this.server.getAccount(this.config.identityRegistryId);
@@ -267,7 +333,16 @@ export class IdentityClient extends BaseClient {
 
   /**
    * Deactivate the DID associated with the given keypair.
-   * Throws if the DID is not found or is already inactive.
+   * Deactivate the DID owned by `keypair`.
+   *
+   * Marks the DID inactive on-chain; subsequent `hasActiveDid` returns `false`.
+   * Deactivation is irreversible.
+   *
+   * @param keypair Controller of the DID being deactivated.
+   * @returns Resolves once the transaction is final on-chain.
+   * @throws {SorobanIdentityError} with code `NOT_FOUND` if the DID does not
+   *   exist or is already inactive, or `CONTRACT_ERROR` for other submission
+   *   failures.
    */
   async deactivateDid(keypair: Keypair): Promise<void> {
     const isActive = await this.hasActiveDid(keypair.publicKey());
@@ -304,7 +379,14 @@ export class IdentityClient extends BaseClient {
     await pollTransactionStatus(this.server, result.hash);
   }
 
-  /** Get storage usage statistics for the identity registry. */
+  /**
+   * Get storage usage statistics for the identity registry.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns The current {@link IdentityStorageStats}.
+   * @throws {SorobanIdentityError} on simulation failure.
+   */
   async getStorageStats(callerAddress: string, options?: CallOptions): Promise<IdentityStorageStats> {
     validateStellarAddress(callerAddress);
     const account = await this.server.getAccount(callerAddress);

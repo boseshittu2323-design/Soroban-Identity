@@ -1,0 +1,529 @@
+openapi: 3.0.3
+info:
+  title: Soroban-Identity API
+  description: |
+    REST-style API contract for the Soroban-Identity protocol, covering the
+    identity-registry, credential-manager, and reputation contracts plus
+    their SDK-level operations.
+
+    Each operation is annotated with `x-soroban-contract` so consumers can map
+    HTTP endpoints to the underlying Soroban contract function they invoke. This
+    file is the single source of truth for the SDK's public surface and can be
+    fed into `openapi-typescript` to regenerate `sdk/src/types.ts` types.
+  version: 0.1.0
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3030
+    description: Local dev server (run with `node scripts/serve-openapi.mjs`)
+tags:
+  - name: identity
+    description: Decentralised identifier (DID) registry operations
+  - name: credentials
+    description: Verifiable credential issuance, revocation, and lookup
+  - name: reputation
+    description: Reporter-submitted scores and anti-sybil checks
+  - name: meta
+    description: Spec discovery and health
+paths:
+  /openapi.yaml:
+    get:
+      tags: [meta]
+      summary: Return this OpenAPI specification.
+      responses:
+        '200':
+          description: The OpenAPI spec.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /health:
+    get:
+      tags: [meta]
+      summary: Liveness probe.
+      responses:
+        '200':
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /identity/dids:
+    post:
+      tags: [identity]
+      summary: Create a new DID.
+      x-soroban-contract:
+        contract: identity-registry
+        function: create_did
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [controller]
+              properties:
+                controller:
+                  type: string
+                  description: Stellar address that will own the DID.
+                metadata:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        '201':
+          description: DID created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  did: { type: string, example: 'did:stellar:GABC...' }
+                  estimatedFee: { type: integer }
+                  estimatedFeeXlm: { type: string }
+        '400':
+          description: A DID already exists for this controller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /identity/dids/{controller}:
+    parameters:
+      - { in: path, name: controller, required: true, schema: { type: string } }
+    get:
+      tags: [identity]
+      summary: Resolve a DID document.
+      x-soroban-contract:
+        contract: identity-registry
+        function: resolve_did
+      responses:
+        '200':
+          description: Resolved DID document.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DidDocument' }
+        '404':
+          description: No DID exists for `controller`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      tags: [identity]
+      summary: Update DID metadata.
+      x-soroban-contract:
+        contract: identity-registry
+        function: update_did
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metadata]
+              properties:
+                metadata:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        '204':
+          description: Updated.
+        '404':
+          description: No DID exists for `controller`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Caller is not the DID controller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [identity]
+      summary: Deactivate a DID.
+      x-soroban-contract:
+        contract: identity-registry
+        function: deactivate_did
+      responses:
+        '204':
+          description: Deactivated.
+        '404':
+          description: No active DID for `controller`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /identity/dids/{controller}/active:
+    get:
+      tags: [identity]
+      summary: Check whether a controller has an active DID.
+      x-soroban-contract:
+        contract: identity-registry
+        function: has_active_did
+      parameters:
+        - { in: path, name: controller, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Active-status check.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active: { type: boolean }
+
+  /credentials:
+    post:
+      tags: [credentials]
+      summary: Issue a verifiable credential.
+      x-soroban-contract:
+        contract: credential-manager
+        function: issue_credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issuer, subject, credentialType, claimsHash]
+              properties:
+                issuer: { type: string }
+                subject: { type: string }
+                credentialType: { $ref: '#/components/schemas/CredentialType' }
+                claims:
+                  type: object
+                  additionalProperties: { type: string }
+                claimsHash:
+                  type: string
+                  pattern: '^[0-9a-fA-F]{64}$'
+                  description: 64-char hex (32 bytes) SHA-256 of the off-chain claims.
+                signature:
+                  type: string
+                  pattern: '^[0-9a-fA-F]{128}$'
+                expiresAt:
+                  type: integer
+                  description: Unix timestamp. 0 = no expiry.
+      responses:
+        '201':
+          description: Credential issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credentialId: { type: string }
+                  estimatedFee: { type: integer }
+                  estimatedFeeXlm: { type: string }
+        '400':
+          description: Malformed claims hash or signature.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Issuer is not registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /credentials/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string }, description: Hex-encoded 32-byte credential ID. }
+    get:
+      tags: [credentials]
+      summary: Get a credential by ID.
+      x-soroban-contract:
+        contract: credential-manager
+        function: get_credential
+      responses:
+        '200':
+          description: The credential record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Credential' }
+        '404':
+          description: No credential with this ID.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [credentials]
+      summary: Revoke a credential.
+      x-soroban-contract:
+        contract: credential-manager
+        function: revoke_credential
+      responses:
+        '204':
+          description: Revoked.
+
+  /credentials/{id}/verify:
+    get:
+      tags: [credentials]
+      summary: Verify a credential's validity.
+      x-soroban-contract:
+        contract: credential-manager
+        function: verify_credential
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerifyResult' }
+
+  /credentials/by-subject/{subject}:
+    parameters:
+      - { in: path, name: subject, required: true, schema: { type: string } }
+      - { in: query, name: cursor, schema: { type: integer, format: int64 }, description: Resume index from a prior page. }
+      - { in: query, name: limit, schema: { type: integer, default: 0, maximum: 100 }, description: Page size; 0 → cap (100). }
+      - { in: query, name: credentialType, schema: { $ref: '#/components/schemas/CredentialType' }, description: 'Optional filter — issue #251.' }
+    get:
+      tags: [credentials]
+      summary: List credentials issued to a subject (cursor-paginated, optionally filtered).
+      x-soroban-contract:
+        contract: credential-manager
+        function: list_subject_credentials
+      responses:
+        '200':
+          description: One page of credential IDs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialIdsPage' }
+
+  /credentials/issuers:
+    parameters:
+      - { in: query, name: cursor, schema: { type: integer, format: int64 } }
+      - { in: query, name: limit, schema: { type: integer, default: 0, maximum: 100 } }
+    get:
+      tags: [credentials]
+      summary: List registered issuers (cursor-paginated).
+      x-soroban-contract:
+        contract: credential-manager
+        function: list_issuers
+      responses:
+        '200':
+          description: One page of issuer addresses.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AddressesPage' }
+
+  /reputation/{subject}:
+    get:
+      tags: [reputation]
+      summary: Get the aggregate reputation record for a subject.
+      x-soroban-contract:
+        contract: reputation
+        function: get_reputation
+      parameters:
+        - { in: path, name: subject, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Aggregate record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReputationRecord' }
+
+  /reputation/{subject}/sybil-check:
+    get:
+      tags: [reputation]
+      summary: Run the stored-default sybil check for a subject.
+      x-soroban-contract:
+        contract: reputation
+        function: passes_sybil_check_default
+      parameters:
+        - { in: path, name: subject, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Pass/fail result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  passes: { type: boolean }
+
+  /reputation/{subject}/history:
+    parameters:
+      - { in: path, name: subject, required: true, schema: { type: string } }
+      - { in: query, name: reporter, required: true, schema: { type: string } }
+      - { in: query, name: cursor, schema: { type: integer, format: int64 } }
+      - { in: query, name: limit, schema: { type: integer, default: 0, maximum: 100 } }
+    get:
+      tags: [reputation]
+      summary: List a subject's score history from a specific reporter (cursor-paginated).
+      x-soroban-contract:
+        contract: reputation
+        function: list_history
+      responses:
+        '200':
+          description: One page of score entries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScoreEntriesPage' }
+        '404':
+          description: Reporter is not registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /reputation/reporters:
+    parameters:
+      - { in: query, name: cursor, schema: { type: integer, format: int64 } }
+      - { in: query, name: limit, schema: { type: integer, default: 0, maximum: 100 } }
+    get:
+      tags: [reputation]
+      summary: List registered reporters (cursor-paginated).
+      x-soroban-contract:
+        contract: reputation
+        function: list_reporters
+      responses:
+        '200':
+          description: One page of reporter addresses.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AddressesPage' }
+
+  /reputation/scores:
+    post:
+      tags: [reputation]
+      summary: Submit a score delta. Caller must be a registered reporter.
+      x-soroban-contract:
+        contract: reputation
+        function: submit_score
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reporter, subject, delta, reason]
+              properties:
+                reporter: { type: string }
+                subject: { type: string }
+                delta: { type: integer, format: int64 }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Score submitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estimatedFee: { type: integer }
+                  estimatedFeeXlm: { type: string }
+        '401':
+          description: Reporter is not registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string }
+        code:
+          type: string
+          enum: [NOT_FOUND, UNAUTHORIZED, NETWORK_ERROR, VALIDATION_ERROR, CONTRACT_ERROR, UNKNOWN]
+    CredentialType:
+      type: string
+      enum: [Kyc, Reputation, Achievement, Custom]
+    DidDocument:
+      type: object
+      required: [id, controller, metadata, createdAt, updatedAt, active]
+      properties:
+        id: { type: string }
+        controller: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        createdAt: { type: integer, format: int64 }
+        updatedAt: { type: integer, format: int64 }
+        active: { type: boolean }
+    Credential:
+      type: object
+      required: [id, subject, issuer, credentialType, claims, claimsHash, signature, issuedAt, expiresAt, revoked]
+      properties:
+        id: { type: string }
+        subject: { type: string }
+        issuer: { type: string }
+        credentialType: { $ref: '#/components/schemas/CredentialType' }
+        claims:
+          type: object
+          additionalProperties: { type: string }
+        claimsHash: { type: string }
+        signature: { type: string }
+        issuedAt: { type: integer, format: int64 }
+        expiresAt: { type: integer, format: int64 }
+        revoked: { type: boolean }
+    VerifyResult:
+      oneOf:
+        - type: object
+          required: [valid]
+          properties:
+            valid: { type: boolean, enum: [true] }
+        - type: object
+          required: [valid, reason]
+          properties:
+            valid: { type: boolean, enum: [false] }
+            reason:
+              type: string
+              enum: [not_found, revoked, expired, unknown]
+    ReputationRecord:
+      type: object
+      required: [subject, score, reporterCount, updatedAt]
+      properties:
+        subject: { type: string }
+        score: { type: integer, format: int64 }
+        reporterCount: { type: integer }
+        updatedAt: { type: integer, format: int64 }
+    ScoreEntry:
+      type: object
+      required: [reporter, delta, reason, submittedAt]
+      properties:
+        reporter: { type: string }
+        delta: { type: integer, format: int64 }
+        reason: { type: string }
+        submittedAt: { type: integer, format: int64 }
+    CredentialIdsPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { type: string, description: Hex-encoded 32-byte credential ID. }
+        nextCursor:
+          type: integer
+          format: int64
+          nullable: true
+    AddressesPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { type: string }
+        nextCursor:
+          type: integer
+          format: int64
+          nullable: true
+    ScoreEntriesPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ScoreEntry' }
+        nextCursor:
+          type: integer
+          format: int64
+          nullable: true

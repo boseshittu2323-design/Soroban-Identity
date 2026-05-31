@@ -76,6 +76,28 @@ pub struct ScoreEntry {
     pub submitted_at: u64,
 }
 
+/// One page of [`ScoreEntry`] history returned by
+/// [`Reputation::list_history`]. See [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScoreEntriesPage {
+    pub items: Vec<ScoreEntry>,
+    pub next_cursor: Option<u64>,
+}
+
+/// One page of reporter addresses returned by [`Reputation::list_reporters`].
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportersPage {
+    pub items: Vec<Address>,
+    pub next_cursor: Option<u64>,
+}
+
+/// Maximum items returned in a single paginated page. Same rationale as the
+/// credential-manager's `PAGE_CAP` — keeps individual invocations inside
+/// Soroban's per-call instruction budget.
+const PAGE_CAP: u32 = 100;
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -166,6 +188,7 @@ impl Reputation {
                 (reporter, env.ledger().timestamp()),
             );
         }
+        Ok(())
     }
 
     /// Removes a trusted reporter (admin only).
@@ -243,7 +266,7 @@ impl Reputation {
             .persistent()
             .get::<(Symbol, Address), ReputationRecord>(&key)
         {
-            None => false,
+            None => Ok(false),
             Some(rec) => {
                 Ok(rec.score >= threshold.min_score && rec.reporter_count >= threshold.min_reporters)
             }
@@ -486,6 +509,109 @@ impl Reputation {
     /// * `env` - The Soroban environment.
     pub fn get_reporters_list(env: Env) -> Vec<Address> {
         Self::get_reporters(&env)
+    }
+
+    /// Returns one page of registered reporter addresses.
+    ///
+    /// See [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248).
+    /// `cursor` is the zero-based start index, `limit` is the page size
+    /// (clamped to [`PAGE_CAP`], `0` → [`PAGE_CAP`]). `next_cursor` is `None`
+    /// when the iterator is exhausted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    pub fn list_reporters(env: Env, cursor: Option<u64>, limit: u32) -> ReportersPage {
+        let all = Self::get_reporters(&env);
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<Address> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            items.push_back(all.get(next as u32).unwrap());
+            next += 1;
+            taken += 1;
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        ReportersPage { items, next_cursor }
+    }
+
+    /// Cursor-based variant of [`Self::get_history`].
+    ///
+    /// See [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248).
+    /// Unlike `get_history`, which takes `offset` + `limit` and returns a raw
+    /// `Vec<ScoreEntry>`, this returns a [`ScoreEntriesPage`] so callers can
+    /// keep iterating without guessing when the list is exhausted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `subject` - The address whose history to read.
+    /// * `reporter` - The reporter whose submissions to include.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    ///
+    /// # Errors
+    /// Returns [`ContractError::ReporterNotFound`] if `reporter` is not a
+    /// currently registered reporter.
+    pub fn list_history(
+        env: Env,
+        subject: Address,
+        reporter: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<ScoreEntriesPage, ContractError> {
+        if !Self::get_reporters(&env).contains(&reporter) {
+            return Err(ContractError::ReporterNotFound);
+        }
+
+        let key = Self::history_key(&subject, &reporter);
+        let all: Vec<ScoreEntry> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<ScoreEntry> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            items.push_back(all.get(next as u32).unwrap());
+            next += 1;
+            taken += 1;
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        Ok(ScoreEntriesPage { items, next_cursor })
     }
 
     /// Returns storage usage statistics for the reputation contract.
@@ -945,5 +1071,71 @@ mod tests {
         let stats = client.get_storage_stats();
         assert_eq!(stats.total_subjects, 2);
         assert_eq!(stats.total_score_entries, 3);
+    }
+
+    #[test]
+    fn test_list_reporters_paginates() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        for _ in 0..3 {
+            client.add_reporter(&Address::generate(&env));
+        }
+
+        let page1 = client.list_reporters(&None, &2);
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.next_cursor, Some(2));
+
+        let page2 = client.list_reporters(&page1.next_cursor, &2);
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.next_cursor, None);
+    }
+
+    #[test]
+    fn test_list_history_paginates() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let reporter = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.initialize(&admin);
+        client.add_reporter(&reporter);
+
+        let reason = String::from_str(&env, "tick");
+        for _ in 0..3 {
+            client.submit_score(&reporter, &subject, &1, &reason);
+            env.ledger().with_mut(|li| li.sequence_number += 101);
+        }
+
+        let page1 = client.list_history(&subject, &reporter, &None, &2);
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.next_cursor, Some(2));
+
+        let page2 = client.list_history(&subject, &reporter, &page1.next_cursor, &2);
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.next_cursor, None);
+    }
+
+    #[test]
+    fn test_list_history_rejects_unknown_reporter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let subject = Address::generate(&env);
+        let unknown = Address::generate(&env);
+
+        let result = client.try_list_history(&subject, &unknown, &None, &10);
+        assert_eq!(result, Err(Ok(ContractError::ReporterNotFound)));
     }
 }

@@ -138,6 +138,25 @@ Issuer                    Subject                  Verifier
 
 ---
 
+## API Reference
+
+The full API contract — SDK and contract operations — is defined in
+[`docs/openapi.yaml`](docs/openapi.yaml) as an OpenAPI 3.0 spec. Each operation
+carries an `x-soroban-contract` extension naming the Soroban contract and
+function it maps to.
+
+Run the spec locally:
+
+```bash
+node scripts/serve-openapi.mjs        # http://localhost:3030/openapi.yaml
+```
+
+Regenerate the SDK's TypeScript types from the spec:
+
+```bash
+npx openapi-typescript docs/openapi.yaml -o sdk/src/openapi-types.ts
+```
+
 ## TypeScript SDK
 
 Install:

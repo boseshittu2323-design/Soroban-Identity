@@ -22,12 +22,15 @@ export type {
   DidDocument,
   Credential,
   CredentialType,
+  CredentialListOptions,
   VerifyResult,
   VerifyFailReason,
   CallOptions,
   IdentityStorageStats,
   CredentialStorageStats,
   ReputationStorageStats,
+  Page,
+  PaginationOptions,
 } from './types';
 export type { ReputationRecord, ScoreHistoryEntry } from './reputation';
 export type { EventFilter, ContractEvent } from './events';

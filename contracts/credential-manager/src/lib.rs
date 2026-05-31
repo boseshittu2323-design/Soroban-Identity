@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
-    Map, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
+    BytesN, Env, Map, String, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -56,6 +56,31 @@ pub enum CredentialType {
     Achievement,
     Custom,
 }
+
+/// One page of credential IDs returned by [`CredentialManager::list_subject_credentials`].
+///
+/// `next_cursor` is `None` when the iterator has been exhausted, and `Some(n)`
+/// when more results remain — pass it back as the `cursor` argument on the next
+/// call to continue iteration. See [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CredentialIdsPage {
+    pub items: Vec<BytesN<32>>,
+    pub next_cursor: Option<u64>,
+}
+
+/// One page of issuer addresses returned by [`CredentialManager::list_issuers`].
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct IssuersPage {
+    pub items: Vec<Address>,
+    pub next_cursor: Option<u64>,
+}
+
+/// Maximum items returned in a single paginated page. Callers may request a
+/// smaller `limit`, but anything above this is clamped to keep individual
+/// invocations within Soroban's per-call instruction budget.
+const PAGE_CAP: u32 = 100;
 
 /// A verifiable credential issued to a subject.
 #[contracttype]
@@ -148,7 +173,7 @@ impl CredentialManager {
     ///
     /// # Errors
     /// Returns [`ContractError::Unauthorized`] if `admin` does not match the stored admin address.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: Bytes) -> Result<(), ContractError> {
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -447,6 +472,84 @@ impl CredentialManager {
         Self::fetch_subject_creds(&env, &subject)
     }
 
+    /// Returns one page of credential IDs issued to a subject, optionally
+    /// filtered by [`CredentialType`].
+    ///
+    /// Pagination ([issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248)):
+    /// - `cursor` is the zero-based index into the subject's credential list
+    ///   to start from. `None` is treated as `Some(0)`.
+    /// - `limit` is the maximum items to return; `0` or values above
+    ///   [`PAGE_CAP`] are clamped to [`PAGE_CAP`].
+    /// - The returned `next_cursor` is `Some(i)` when more entries remain
+    ///   (`i` is the resume index) and `None` once the iterator is exhausted.
+    ///
+    /// Filtering ([issue #251](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/251)):
+    /// when `credential_type` is `Some(t)`, only credentials of that type are
+    /// included in the page. Filtering applies AFTER the cursor advances, so a
+    /// page of `limit` may legitimately return fewer items (or zero) without
+    /// implying the end of the list — keep iterating while `next_cursor` is
+    /// `Some`. Revoked entries are included; callers can drop them by
+    /// inspecting [`Credential::revoked`].
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `subject` - The address whose credential IDs to retrieve.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    /// * `credential_type` - Optional filter; only credentials matching this
+    ///   type are included.
+    pub fn list_subject_credentials(
+        env: Env,
+        subject: Address,
+        cursor: Option<u64>,
+        limit: u32,
+        credential_type: Option<CredentialType>,
+    ) -> CredentialIdsPage {
+        let all = Self::fetch_subject_creds(&env, &subject);
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<BytesN<32>> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            let idx = next as u32;
+            let id = all.get(idx).unwrap();
+            next += 1;
+
+            let include = match &credential_type {
+                None => true,
+                Some(filter_type) => {
+                    let key = (CRED, id.clone());
+                    match env.storage().persistent().get::<_, Credential>(&key) {
+                        Some(cred) => cred.credential_type == *filter_type,
+                        None => false,
+                    }
+                }
+            };
+
+            if include {
+                items.push_back(id);
+                taken += 1;
+            }
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        CredentialIdsPage { items, next_cursor }
+    }
+
     /// Returns the total number of credentials ever issued to a subject.
     ///
     /// This counter is incremented on each successful [`Self::issue_credential`]
@@ -466,6 +569,47 @@ impl CredentialManager {
     /// * `env` - The Soroban environment.
     pub fn get_issuers(env: Env) -> Vec<Address> {
         Self::get_issuers_internal(&env)
+    }
+
+    /// Returns one page of registered issuer addresses.
+    ///
+    /// See [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248).
+    /// `cursor` is the zero-based start index, `limit` is the page size
+    /// (clamped to [`PAGE_CAP`], `0` → `PAGE_CAP`). `next_cursor` is `None`
+    /// when the iterator is exhausted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    pub fn list_issuers(env: Env, cursor: Option<u64>, limit: u32) -> IssuersPage {
+        let all = Self::get_issuers_internal(&env);
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<Address> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            items.push_back(all.get(next as u32).unwrap());
+            next += 1;
+            taken += 1;
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        IssuersPage { items, next_cursor }
     }
 
     /// Returns storage usage statistics for the credential manager.
@@ -535,20 +679,8 @@ impl CredentialManager {
             CredentialType::Custom => 3,
         };
         let mut data = Bytes::new(env);
-        data.extend_from_array(
-            &issuer
-                .clone()
-                .to_xdr(env)
-                .to_array::<64>()
-                .unwrap_or([0u8; 64]),
-        );
-        data.extend_from_array(
-            &subject
-                .clone()
-                .to_xdr(env)
-                .to_array::<64>()
-                .unwrap_or([0u8; 64]),
-        );
+        data.append(&issuer.clone().to_xdr(env));
+        data.append(&subject.clone().to_xdr(env));
         data.push_back(type_tag);
         env.crypto().sha256(&data).into()
     }
@@ -1005,5 +1137,151 @@ mod tests {
         // get_credential still returns the record (not extended)
         let cred = client.get_credential(&cred_id);
         assert!(cred.revoked);
+    }
+
+    fn issue_typed(
+        env: &Env,
+        client: &CredentialManagerClient,
+        issuer: &Address,
+        subject: &Address,
+        credential_type: CredentialType,
+    ) -> BytesN<32> {
+        let claims_hash = BytesN::from_array(env, &[1u8; 32]);
+        let sig = Bytes::from_array(env, &[0u8; 64]);
+        client.issue_credential(
+            issuer,
+            subject,
+            &credential_type,
+            &Map::new(env),
+            &claims_hash,
+            &sig,
+            &0u64,
+        )
+    }
+
+    #[test]
+    fn test_list_subject_credentials_paginates() {
+        let (env, _admin, client) = setup();
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        for ct in [
+            CredentialType::Kyc,
+            CredentialType::Reputation,
+            CredentialType::Achievement,
+        ] {
+            issue_typed(&env, &client, &issuer, &subject, ct);
+        }
+
+        let page1 = client.list_subject_credentials(&subject, &None, &2, &None);
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.next_cursor, Some(2));
+
+        let page2 = client.list_subject_credentials(&subject, &page1.next_cursor, &2, &None);
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.next_cursor, None);
+    }
+
+    #[test]
+    fn test_list_subject_credentials_filters_by_type() {
+        let (env, _admin, client) = setup();
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        issue_typed(&env, &client, &issuer, &subject, CredentialType::Kyc);
+        let rep_id =
+            issue_typed(&env, &client, &issuer, &subject, CredentialType::Reputation);
+        issue_typed(&env, &client, &issuer, &subject, CredentialType::Achievement);
+
+        let only_rep = client.list_subject_credentials(
+            &subject,
+            &None,
+            &10,
+            &Some(CredentialType::Reputation),
+        );
+        assert_eq!(only_rep.items.len(), 1);
+        assert_eq!(only_rep.items.get(0).unwrap(), rep_id);
+        assert_eq!(only_rep.next_cursor, None);
+    }
+
+    #[test]
+    fn test_list_subject_credentials_filter_with_pagination_advances_past_filtered() {
+        // Filter matches the second of three; a page of limit=1 starting at
+        // cursor=0 walks past the non-matching first entry and should return
+        // the match with next_cursor pointing PAST it.
+        let (env, _admin, client) = setup();
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        issue_typed(&env, &client, &issuer, &subject, CredentialType::Kyc);
+        let rep_id =
+            issue_typed(&env, &client, &issuer, &subject, CredentialType::Reputation);
+        issue_typed(&env, &client, &issuer, &subject, CredentialType::Achievement);
+
+        let page = client.list_subject_credentials(
+            &subject,
+            &None,
+            &1,
+            &Some(CredentialType::Reputation),
+        );
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items.get(0).unwrap(), rep_id);
+        assert_eq!(page.next_cursor, Some(2));
+    }
+
+    #[test]
+    fn test_list_subject_credentials_empty_subject_returns_no_cursor() {
+        let (env, _admin, _client) = setup();
+        let client = CredentialManagerClient::new(
+            &env,
+            &env.register_contract(None, CredentialManager),
+        );
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let subject = Address::generate(&env);
+
+        let page = client.list_subject_credentials(&subject, &None, &10, &None);
+        assert_eq!(page.items.len(), 0);
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[test]
+    fn test_list_issuers_paginates() {
+        let (env, _admin, client) = setup();
+        for _ in 0..3 {
+            client.add_issuer(&Address::generate(&env));
+        }
+        let page1 = client.list_issuers(&None, &2);
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.next_cursor, Some(2));
+
+        let page2 = client.list_issuers(&page1.next_cursor, &2);
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.next_cursor, None);
+    }
+
+    #[test]
+    fn test_list_subject_credentials_zero_limit_clamps_to_page_cap() {
+        let (env, _admin, client) = setup();
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.add_issuer(&issuer);
+
+        for ct in [
+            CredentialType::Kyc,
+            CredentialType::Reputation,
+            CredentialType::Achievement,
+        ] {
+            issue_typed(&env, &client, &issuer, &subject, ct);
+        }
+
+        // limit=0 → caller wants the default page size (PAGE_CAP=100). All 3
+        // credentials fit in one page.
+        let page = client.list_subject_credentials(&subject, &None, &0, &None);
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.next_cursor, None);
     }
 }

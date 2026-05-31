@@ -7,7 +7,18 @@ import {
   nativeToScVal,
   scValToNative,
 } from "@stellar/stellar-sdk";
-import type { CallOptions, Credential, CredentialStorageStats, CredentialType, SorobanIdentityConfig, VerifyResult, WriteResult } from "./types";
+import type {
+  CallOptions,
+  Credential,
+  CredentialListOptions,
+  CredentialStorageStats,
+  CredentialType,
+  Page,
+  PaginationOptions,
+  SorobanIdentityConfig,
+  VerifyResult,
+  WriteResult,
+} from "./types";
 import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
 import { ContractError, SorobanIdentityError } from "./errors";
 import { CREDENTIAL_MANAGER_ERRORS } from "./error-codes";
@@ -15,7 +26,28 @@ import { BaseClient } from "./base-client";
 
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 
+/**
+ * Client for the credential-manager contract.
+ *
+ * Issues, revokes, verifies, and lists verifiable credentials. Use the
+ * paginated `list*` variants ({@link CredentialClient.listCredentialsBySubject},
+ * {@link CredentialClient.listIssuers}) for production read flows; the
+ * unbounded `get*` variants are kept for small registries and tests.
+ *
+ * @example
+ * ```ts
+ * import { CredentialClient, TESTNET_CONFIG } from '@soroban-identity/sdk';
+ * const credentials = new CredentialClient({ ...TESTNET_CONFIG, credentialManagerId: '...' });
+ * const page = await credentials.listCredentialsBySubject(caller, subject, {
+ *   credentialType: 'Kyc',
+ *   limit: 50,
+ * });
+ * ```
+ */
 export class CredentialClient extends BaseClient {
+  /**
+   * @param config SDK config including the deployed credential-manager contract ID.
+   */
   constructor(config: SorobanIdentityConfig) {
     super(config, config.credentialManagerId);
   }
@@ -53,9 +85,30 @@ export class CredentialClient extends BaseClient {
 
   /**
    * Issue a credential to a subject. Caller must be a registered issuer.
-   * @param claimsHashHex 64-char hex string (32 bytes) — SHA-256 hash of the off-chain claims payload.
-   * @param signatureHex Optional pre-computed 64-byte signature as a 128-char hex string.
-   *                     If omitted, the signature is derived from issuerKeypair.
+   *
+   * Builds, signs, and submits an `issue_credential` call to the
+   * credential-manager. The contract's deterministic ID derivation means the
+   * same `(issuer, subject, credentialType)` triple cannot be issued twice
+   * unless the prior one is revoked.
+   *
+   * @param issuerKeypair   The registered issuer signing the transaction.
+   * @param subjectAddress  The Stellar address receiving the credential.
+   * @param credentialType  Credential category — see {@link CredentialType}.
+   * @param claims          Arbitrary `string → string` claims to embed.
+   * @param claimsHashHex   64-char hex (32 bytes) SHA-256 of the off-chain
+   *                        claims payload.
+   * @param expiresAt       Unix timestamp (seconds) after which the credential
+   *                        is invalid. Pass `0` for no expiry.
+   * @param options         Per-call overrides (currently `timeoutSeconds`).
+   * @param signatureHex    Optional pre-computed 64-byte issuer signature as a
+   *                        128-char hex string. If omitted, the SDK signs over
+   *                        `JSON.stringify({ subjectAddress, claims })`.
+   * @returns The newly assigned credential ID (hex-encoded 32 bytes) and the
+   *          estimated transaction fee.
+   * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` if
+   *   `claimsHashHex` or `signatureHex` are malformed, or `CONTRACT_ERROR` on
+   *   submission failure (including the `UnauthorizedIssuer` and
+   *   `CredentialAlreadyExists` contract errors).
    */
   async issueCredential(
     issuerKeypair: Keypair,
@@ -132,7 +185,18 @@ export class CredentialClient extends BaseClient {
 
   /**
    * Verify a credential is valid (not revoked, not expired).
-   * Returns a typed result so callers can distinguish failure reasons.
+   *
+   * Read-only simulation. Returns a discriminated {@link VerifyResult} so
+   * callers can branch on the failure reason without parsing error strings.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param credentialId  Hex-encoded credential ID (32 bytes).
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns `{ valid: true }` when the credential is active and unexpired;
+   *   otherwise `{ valid: false, reason }` where reason is one of
+   *   `not_found`, `revoked`, `expired`, or `unknown`.
+   * @throws {SorobanIdentityError} on simulation failure unrelated to a
+   *   verification result (network errors, malformed `callerAddress`).
    */
   async verifyCredential(
     callerAddress: string,
@@ -195,6 +259,21 @@ export class CredentialClient extends BaseClient {
 
   /**
    * Get all credentials issued to a subject address.
+   *
+   * Returns full credential records (resolved via {@link CredentialClient.getCredential}
+   * for each ID). Includes revoked credentials — callers can drop them by
+   * inspecting `revoked`.
+   *
+   * **Note:** This method fetches the entire list in one call and is suitable
+   * for subjects with a bounded number of credentials. For large subjects use
+   * the paginated, optionally filtered {@link CredentialClient.listCredentialsBySubject}
+   * (see issue #248).
+   *
+   * @param callerAddress  Stellar address used to build the read simulation.
+   * @param subjectAddress The address whose credentials to retrieve.
+   * @param options        Per-call overrides (currently `timeoutSeconds`).
+   * @returns Array of {@link Credential} records.
+   * @throws {SorobanIdentityError} on simulation failure.
    */
   async getCredentialsBySubject(
     callerAddress: string,
@@ -243,8 +322,18 @@ export class CredentialClient extends BaseClient {
 
   /**
    * Get a credential by ID.
-   * Throws "CredentialNotFound" if the ID was never issued.
-   * Throws "CredentialRevoked" if the credential was issued but later revoked.
+   *
+   * Read-only simulation. Use {@link CredentialClient.verifyCredential} if you
+   * want a typed verification result instead of throwing on revoked/expired
+   * records.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param credentialId  Hex-encoded credential ID (32 bytes).
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns The {@link Credential} record.
+   * @throws {SorobanIdentityError} with code `NOT_FOUND` when the ID was never
+   *   issued, `VALIDATION_ERROR` when the credential has been revoked, or
+   *   `CONTRACT_ERROR` on simulation failure.
    */
   async getCredential(
     callerAddress: string,
@@ -291,6 +380,12 @@ export class CredentialClient extends BaseClient {
 
   /**
    * Check if an address is a registered issuer.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param targetAddress The address to test for issuer membership.
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns `true` if `targetAddress` is currently registered as an issuer.
+   * @throws {SorobanIdentityError} on simulation failure.
    */
   async isIssuer(
     callerAddress: string,
@@ -331,7 +426,17 @@ export class CredentialClient extends BaseClient {
 
   /**
    * Verify multiple credentials in parallel.
-   * Returns an array of VerifyResult in the same order as the input credentialIds.
+   *
+   * Convenience wrapper around {@link CredentialClient.verifyCredential} that
+   * issues all simulations concurrently.
+   *
+   * @param callerAddress Stellar address used to build the read simulations.
+   * @param credentialIds Hex-encoded credential IDs (32 bytes each).
+   * @param options       Per-call overrides (applied to each underlying call).
+   * @returns Array of {@link VerifyResult} in the same order as `credentialIds`.
+   * @throws {SorobanIdentityError} if any individual simulation fails
+   *   irrecoverably (network errors); per-credential validity failures are
+   *   represented in the returned array.
    */
   async verifyCredentialsBatch(
     callerAddress: string,
@@ -345,7 +450,17 @@ export class CredentialClient extends BaseClient {
   }
 
   /**
-   * Get the total number of credentials issued to a subject (decremented on revoke).
+   * Get the total number of credentials issued to a subject.
+   *
+   * Counter is incremented on each successful issue; it is NOT decremented on
+   * revoke. Use {@link CredentialClient.listCredentialsBySubject} with `revoked`
+   * filtering if you need active counts.
+   *
+   * @param callerAddress  Stellar address used to build the read simulation.
+   * @param subjectAddress The subject whose count to retrieve.
+   * @param options        Per-call overrides (currently `timeoutSeconds`).
+   * @returns Number of credentials ever issued to `subjectAddress`.
+   * @throws {SorobanIdentityError} on simulation failure.
    */
   async getCredentialCount(
     callerAddress: string,
@@ -385,7 +500,15 @@ export class CredentialClient extends BaseClient {
   }
 
   /**
-   * Get the list of all registered issuers. No auth required — read-only.
+   * Get the list of all registered issuers.
+   *
+   * Returns the entire roster in one call. For large registries use the
+   * paginated {@link CredentialClient.listIssuers} (see issue #248).
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns Array of issuer Stellar addresses.
+   * @throws {SorobanIdentityError} on simulation failure.
    */
   async getIssuers(callerAddress: string, options?: CallOptions): Promise<string[]> {
     validateStellarAddress(callerAddress);
@@ -416,7 +539,14 @@ export class CredentialClient extends BaseClient {
     return issuers;
   }
 
-  /** Get storage usage statistics for the credential manager. */
+  /**
+   * Get storage usage statistics for the credential manager.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns Current {@link CredentialStorageStats}.
+   * @throws {SorobanIdentityError} on simulation failure.
+   */
   async getStorageStats(callerAddress: string, options?: CallOptions): Promise<CredentialStorageStats> {
     validateStellarAddress(callerAddress);
     const account = await this.server.getAccount(callerAddress);
@@ -441,5 +571,149 @@ export class CredentialClient extends BaseClient {
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as CredentialStorageStats;
+  }
+
+  /**
+   * Cursor-paginated, optionally type-filtered variant of
+   * {@link CredentialClient.getCredentialsBySubject}.
+   *
+   * Combines [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248)
+   * (pagination) and [issue #251](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/251)
+   * (type filter). Each call returns one page of credential IDs;
+   * `options.credentialType` filters to a single
+   * {@link CredentialType}, and `nextCursor` is `null` once the iterator is exhausted.
+   *
+   * Filtering is applied AFTER the cursor advances, so a page may return fewer
+   * items than `limit` (or zero) without implying the end of the list. Always
+   * advance while `nextCursor !== null`, not on `items.length`.
+   *
+   * Unlike `getCredentialsBySubject`, this method returns IDs only — fetch the
+   * full credentials with {@link CredentialClient.getCredential} as needed.
+   *
+   * @param callerAddress   Stellar address used to build the read-only simulation.
+   * @param subjectAddress  The subject whose credential IDs to retrieve.
+   * @param options         Pagination + filter + per-call overrides.
+   * @returns Page of credential IDs (hex-encoded) with the next resume cursor.
+   * @throws {SorobanIdentityError} on simulation failure.
+   *
+   * @example
+   * ```ts
+   * let cursor: number | undefined;
+   * const ids: string[] = [];
+   * do {
+   *   const page = await credentials.listCredentialsBySubject(caller, subject, {
+   *     cursor,
+   *     limit: 50,
+   *     credentialType: 'Kyc',
+   *   });
+   *   ids.push(...page.items);
+   *   cursor = page.nextCursor ?? undefined;
+   * } while (cursor !== undefined);
+   * ```
+   */
+  async listCredentialsBySubject(
+    callerAddress: string,
+    subjectAddress: string,
+    options?: CredentialListOptions
+  ): Promise<Page<string>> {
+    validateStellarAddress(callerAddress);
+    validateStellarAddress(subjectAddress);
+    const account = await this.server.getAccount(callerAddress);
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const cursorArg = options?.cursor === undefined
+      ? nativeToScVal(null, { type: 'option' })
+      : nativeToScVal({ Some: options.cursor }, {
+          type: { Some: ['u64'] } as never,
+        });
+    const filterArg = options?.credentialType === undefined
+      ? nativeToScVal(null, { type: 'option' })
+      : nativeToScVal({ Some: options.credentialType }, {
+          type: { Some: ['symbol'] } as never,
+        });
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          'list_subject_credentials',
+          nativeToScVal(subjectAddress, { type: 'address' }),
+          cursorArg,
+          nativeToScVal(options?.limit ?? 0, { type: 'u32' }),
+          filterArg
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      const errMsg = result.error ?? '';
+      const contractErr = ContractError.extract(errMsg, CREDENTIAL_MANAGER_ERRORS);
+      if (contractErr) throw contractErr;
+      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
+    }
+
+    const raw = scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as { items: Uint8Array[]; next_cursor: number | null };
+
+    return {
+      items: raw.items.map((b) => Buffer.from(b).toString('hex')),
+      nextCursor: raw.next_cursor ?? null,
+    };
+  }
+
+  /**
+   * Cursor-paginated variant of {@link CredentialClient.getIssuers}.
+   *
+   * See [issue #248](https://github.com/El-Chapo-Npm/Soroban-Identity/issues/248).
+   *
+   * @param callerAddress  Stellar address used to build the read-only simulation.
+   * @param options        Pagination + per-call overrides.
+   * @returns Page of issuer addresses with the next resume cursor.
+   * @throws {SorobanIdentityError} on simulation failure.
+   */
+  async listIssuers(
+    callerAddress: string,
+    options?: PaginationOptions
+  ): Promise<Page<string>> {
+    validateStellarAddress(callerAddress);
+    const account = await this.server.getAccount(callerAddress);
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const cursorArg = options?.cursor === undefined
+      ? nativeToScVal(null, { type: 'option' })
+      : nativeToScVal({ Some: options.cursor }, {
+          type: { Some: ['u64'] } as never,
+        });
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          'list_issuers',
+          cursorArg,
+          nativeToScVal(options?.limit ?? 0, { type: 'u32' })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      const errMsg = result.error ?? '';
+      const contractErr = ContractError.extract(errMsg, CREDENTIAL_MANAGER_ERRORS);
+      if (contractErr) throw contractErr;
+      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
+    }
+
+    const raw = scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as { items: string[]; next_cursor: number | null };
+
+    return { items: raw.items, nextCursor: raw.next_cursor ?? null };
   }
 }
