@@ -290,7 +290,10 @@ impl Reputation {
         reporter.require_auth();
         Self::require_reporter(&env, &reporter)?;
 
-        // Validate reason string length
+        // Validate inputs
+        if delta < -100 || delta > 100 {
+            panic!("Delta must be between -100 and 100");
+        }
         if reason.len() > 256 {
             return Err(ContractError::ReasonTooLong);
         }
