@@ -15,7 +15,6 @@ import {
   type NetworkName,
 } from "./network";
 import { checkConnection, IdentityClient, CredentialClient, ReputationClient } from "../../sdk/src/index";
-import { getAppConfig } from "./config";
 import type { Credential } from "../../sdk/src/types";
 
 type Tab = "identity" | "credentials";
@@ -63,8 +62,10 @@ export default function App() {
   // Check RPC connection health on load
   useEffect(() => {
     const checkRpcHealth = async () => {
-      const config = getAppConfig();
-      const server = new SorobanRpc.Server(config.rpcUrl);
+      const rpcUrl = Array.isArray(networkConfig.rpcUrl)
+        ? networkConfig.rpcUrl[0]
+        : networkConfig.rpcUrl;
+      const server = new SorobanRpc.Server(rpcUrl);
       const healthy = await checkConnection(server);
       setIsConnected(healthy);
     };
@@ -74,10 +75,9 @@ export default function App() {
   // Check contract initialization on load
   useEffect(() => {
     const checkInit = async () => {
-      const config = getAppConfig();
-      const identity = new IdentityClient(config);
-      const credentials = new CredentialClient(config);
-      const reputation = new ReputationClient(config);
+      const identity = new IdentityClient(networkConfig);
+      const credentials = new CredentialClient(networkConfig);
+      const reputation = new ReputationClient(networkConfig);
       const [idOk, credOk, repOk] = await Promise.all([
         identity.isInitialized(),
         credentials.isInitialized(),
