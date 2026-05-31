@@ -52,26 +52,38 @@ export class ReputationClient extends BaseClient {
     try {
       return await this.executeWithFailover(async (server) => {
         const account = await server.getAccount(PROBE_ADDRESS);
-      const tx = new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: this.config.networkPassphrase,
-      })
-        .addOperation(
-          this.contract.call(
-            'passes_sybil_check_default',
-            nativeToScVal(PROBE_ADDRESS, { type: 'address' })
+        const tx = new TransactionBuilder(account, {
+          fee: BASE_FEE,
+          networkPassphrase: this.config.networkPassphrase,
+        })
+          .addOperation(
+            this.contract.call(
+              'passes_sybil_check_default',
+              nativeToScVal(PROBE_ADDRESS, { type: 'address' })
+            )
           )
-        )
-        .setTimeout(10)
-        .build();
-      const result = await this.server.simulateTransaction(tx);
-      if (SorobanRpc.Api.isSimulationError(result)) {
-        const err: string = (result as { error: string }).error ?? '';
-        if (err.includes('not initialized') || err.includes('NotInitialized') || err.includes('#0')) {
-          return false;
+          .setTimeout(10)
+          .build();
+
+        const result = await server.simulateTransaction(tx);
+        this.debug('sdk.simulation_result', {
+          operation: 'reputation.isInitialized',
+          success: !SorobanRpc.Api.isSimulationError(result),
+        });
+
+        if (SorobanRpc.Api.isSimulationError(result)) {
+          const err: string = (result as { error: string }).error ?? '';
+          if (
+            err.includes('not initialized') ||
+            err.includes('NotInitialized') ||
+            err.includes('#0')
+          ) {
+            return false;
+          }
         }
-      }
-      return true;
+
+        return true;
+      });
     } catch {
       return false;
     }
@@ -317,6 +329,7 @@ export class ReputationClient extends BaseClient {
     const prepared = await retryWithBackoff(() =>
       this.server.prepareTransaction(tx)
     );
+    this.debug('sdk.simulation_result', { operation: 'reputation.submitScore.prepare', success: true });
     const estimatedFee = parseInt(prepared.fee, 10);
     const estimatedFeeXlm = (estimatedFee / 10_000_000).toFixed(7);
     prepared.sign(reporterKeypair);
@@ -324,6 +337,7 @@ export class ReputationClient extends BaseClient {
     const result = await retryWithBackoff(() =>
       this.server.sendTransaction(prepared)
     );
+    this.debug('sdk.submission_outcome', { operation: 'reputation.submitScore.send', status: result.status });
     if (result.status !== 'PENDING') {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, 'CONTRACT_ERROR');
     }

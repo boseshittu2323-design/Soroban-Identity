@@ -29,6 +29,13 @@ export type VerifyResult =
   | { valid: true }
   | { valid: false; reason: VerifyFailReason };
 
+export interface SorobanIdentityLogger {
+  debug(message: string, meta?: Record<string, unknown>): void;
+  info?(message: string, meta?: Record<string, unknown>): void;
+  warn?(message: string, meta?: Record<string, unknown>): void;
+  error?(message: string, meta?: Record<string, unknown>): void;
+}
+
 export interface SorobanIdentityConfig {
   rpcUrl: string | string[];
   networkPassphrase: string;
@@ -41,6 +48,8 @@ export interface SorobanIdentityConfig {
   maxConcurrentRequests?: number;
   /** Request retry delay in ms. Defaults to 1000. */
   retryDelay?: number;
+  /** Optional pluggable logger for RPC simulation/submission traces. */
+  logger?: SorobanIdentityLogger;
 }
 
 /** Per-call options that override the global config. */

@@ -32,7 +32,7 @@ export type {
 export type { ReputationRecord, ScoreHistoryEntry } from './reputation';
 export type { EventFilter, ContractEvent } from './events';
 import type { SorobanIdentityConfig } from './types';
-export type { SorobanIdentityConfig };
+export type { SorobanIdentityConfig, SorobanIdentityLogger };
 
 // Testnet defaults — fill contract IDs after deployment
 export const TESTNET_CONFIG: SorobanIdentityConfig = {
