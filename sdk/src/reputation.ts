@@ -328,7 +328,11 @@ export class ReputationClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, 'CONTRACT_ERROR');
     }
 
-    await pollTransactionStatus(this.server, result.hash);
+    await pollTransactionStatus(this.server, result.hash, {
+      maxAttempts: this.config.pollingRetries,
+      intervalMs: this.config.pollingIntervalMs,
+      exponentialBackoff: this.config.pollingExponentialBackoff,
+    });
     return { estimatedFee, estimatedFeeXlm };
   }
 

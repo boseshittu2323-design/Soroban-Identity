@@ -95,7 +95,11 @@ export class IdentityClient extends BaseClient {
     }
 
     try {
-      await pollTransactionStatus(this.server, result.hash);
+      await pollTransactionStatus(this.server, result.hash, {
+        maxAttempts: this.config.pollingRetries,
+        intervalMs: this.config.pollingIntervalMs,
+        exponentialBackoff: this.config.pollingExponentialBackoff,
+      });
       const confirmed = await this.server.getTransaction(result.hash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
       const did = scValToNative(confirmed.returnValue!) as string;
       return { did, estimatedFee, estimatedFeeXlm };
@@ -145,7 +149,11 @@ export class IdentityClient extends BaseClient {
     }
 
     try {
-      await pollTransactionStatus(this.server, result.hash);
+      await pollTransactionStatus(this.server, result.hash, {
+        maxAttempts: this.config.pollingRetries,
+        intervalMs: this.config.pollingIntervalMs,
+        exponentialBackoff: this.config.pollingExponentialBackoff,
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("DID not found")) {
@@ -302,7 +310,11 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
-    await pollTransactionStatus(this.server, result.hash);
+    await pollTransactionStatus(this.server, result.hash, {
+      maxAttempts: this.config.pollingRetries,
+      intervalMs: this.config.pollingIntervalMs,
+      exponentialBackoff: this.config.pollingExponentialBackoff,
+    });
   }
 
   /** Get storage usage statistics for the identity registry. */

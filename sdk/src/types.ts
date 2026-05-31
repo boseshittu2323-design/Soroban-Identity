@@ -41,6 +41,12 @@ export interface SorobanIdentityConfig {
   maxConcurrentRequests?: number;
   /** Request retry delay in ms. Defaults to 1000. */
   retryDelay?: number;
+  /** Polling retries for transaction confirmation. Defaults to 10. */
+  pollingRetries?: number;
+  /** Initial polling interval in ms. Defaults to 2000. */
+  pollingIntervalMs?: number;
+  /** Use exponential backoff for polling. Defaults to true. */
+  pollingExponentialBackoff?: boolean;
 }
 
 /** Per-call options that override the global config. */
