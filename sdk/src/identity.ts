@@ -187,8 +187,9 @@ export class IdentityClient extends BaseClient {
       .build();
 
     const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
-    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !SorobanRpc.Api.isSimulationError(result) });
-    if (SorobanRpc.Api.isSimulationError(result)) {
+    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !isSimulationError });
+    if (isSimulationError) {
       const errMsg = result.error ?? "";
       const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
       if (contractErr) throw contractErr;
@@ -229,8 +230,9 @@ export class IdentityClient extends BaseClient {
       .build();
 
     const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
-    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !SorobanRpc.Api.isSimulationError(result) });
-    if (SorobanRpc.Api.isSimulationError(result)) return false;
+    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !isSimulationError });
+    if (isSimulationError) return false;
 
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
@@ -256,8 +258,9 @@ export class IdentityClient extends BaseClient {
       .build();
 
     const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
-    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !SorobanRpc.Api.isSimulationError(result) });
-    if (SorobanRpc.Api.isSimulationError(result)) {
+    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !isSimulationError });
+    if (isSimulationError) {
       const errMsg = result.error ?? "";
       const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
       if (contractErr) throw contractErr;
@@ -325,8 +328,9 @@ export class IdentityClient extends BaseClient {
       .build();
 
     const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
-    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !SorobanRpc.Api.isSimulationError(result) });
-    if (SorobanRpc.Api.isSimulationError(result)) {
+    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !isSimulationError });
+    if (isSimulationError) {
       const errMsg = result.error ?? "";
       const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
       if (contractErr) throw contractErr;

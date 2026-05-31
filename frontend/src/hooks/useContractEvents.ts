@@ -16,6 +16,7 @@ export interface StreamedContractEvent {
   timestamp: string;
 }
 
+const MAX_EVENTS = 200;
 export function useContractEvents(filter?: ContractEventFilter) {
   const [events, setEvents] = useState<StreamedContractEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -23,6 +24,8 @@ export function useContractEvents(filter?: ContractEventFilter) {
   const sourceRef = useRef<EventSource | null>(null);
 
   const eventsUrl = import.meta.env.VITE_EVENTS_URL ?? 'http://localhost:3001/events';
+
+  const topicKey = filter?.topic?.join(',') ?? '';
 
   const streamUrl = useMemo(() => {
     const url = new URL(eventsUrl);
@@ -33,7 +36,7 @@ export function useContractEvents(filter?: ContractEventFilter) {
       url.searchParams.set('topic', filter.topic.join(','));
     }
     return url.toString();
-  }, [eventsUrl, filter?.contractId, JSON.stringify(filter?.topic ?? [])]);
+  }, [eventsUrl, filter?.contractId, topicKey]);
 
   useEffect(() => {
     const source = new EventSource(streamUrl);
@@ -47,7 +50,7 @@ export function useContractEvents(filter?: ContractEventFilter) {
     source.addEventListener('contract-event', (evt) => {
       try {
         const parsed = JSON.parse((evt as MessageEvent).data) as StreamedContractEvent;
-        setEvents((prev) => [parsed, ...prev].slice(0, 200));
+        setEvents((prev) => [parsed, ...prev].slice(0, MAX_EVENTS));
       } catch {
         // Ignore invalid payloads
       }

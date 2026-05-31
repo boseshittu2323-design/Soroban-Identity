@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const { v4: uuidv4 } = require('uuid');
 const { createClient } = require('redis');
 const {
@@ -28,6 +29,8 @@ const config = {
   eventPollIntervalMs: Number(process.env.EVENT_POLL_INTERVAL_MS || 3000),
   didCacheTtlSeconds: Number(process.env.DID_CACHE_TTL_SECONDS || 60),
   cacheControlMaxAgeSeconds: Number(process.env.CACHE_CONTROL_MAX_AGE_SECONDS || 60),
+  didResolutionRateLimitWindowMs: Number(process.env.DID_RESOLUTION_RATE_LIMIT_WINDOW_MS || 60000),
+  didResolutionRateLimitMaxRequests: Number(process.env.DID_RESOLUTION_RATE_LIMIT_MAX_REQUESTS || 60),
   redisUrl: process.env.REDIS_URL,
 };
 
@@ -112,7 +115,7 @@ function normalizeEvent(event, index) {
     ledger: event.ledger,
     txHash: event.txHash,
     txHashHex: event.txHash,
-    timestamp: new Date().toISOString(),
+    timestamp: event.ledgerClosedAt || new Date().toISOString(),
   };
 }
 
@@ -226,6 +229,23 @@ async function resolveDidDocument(controllerAddress, requestId) {
   return { didDocument, error: null };
 }
 
+
+const didResolutionLimiter = rateLimit({
+  windowMs: config.didResolutionRateLimitWindowMs,
+  max: config.didResolutionRateLimitMaxRequests,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => {
+    res.status(429).json({
+      didDocument: null,
+      didResolutionMetadata: {
+        error: 'rateLimited',
+      },
+      didDocumentMetadata: {},
+    });
+  },
+});
+
 function buildDidResolutionResponse(did, didDocument, error) {
   const now = new Date().toISOString();
 
@@ -286,7 +306,7 @@ app.get('/events', (req, res) => {
   });
 });
 
-app.get('/1.0/identifiers/:did', async (req, res) => {
+app.get('/1.0/identifiers/:did', didResolutionLimiter, async (req, res) => {
   const did = req.params.did;
   const controllerAddress = parseDid(did);
 
@@ -366,7 +386,10 @@ app.use((error, req, res, _next) => {
 });
 
 async function pollContractEvents() {
-  if (pollInFlight) return;
+  if (pollInFlight) {
+    log('debug', 'events.poll_skipped', { requestId: 'event-poller' });
+    return;
+  }
 
   const contractIds = [
     config.identityRegistryId,
