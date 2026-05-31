@@ -4,6 +4,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
     Map, String, Symbol, Vec,
 };
+use soroban_sdk::xdr::ToXdr;
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ impl CredentialManager {
     ///
     /// # Errors
     /// Returns [`ContractError::Unauthorized`] if `admin` does not match the stored admin address.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: Bytes) -> Result<(), ContractError> {
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -520,8 +521,6 @@ impl CredentialManager {
             .unwrap_or_else(|| Vec::new(env))
     }
 
-    /// Derive a deterministic 32-byte credential ID from issuer + subject + credential_type.
-    /// Uses the Soroban-native sha256 over the XDR-serialised addresses and a type tag byte.
     fn derive_id(
         env: &Env,
         issuer: &Address,
@@ -535,20 +534,8 @@ impl CredentialManager {
             CredentialType::Custom => 3,
         };
         let mut data = Bytes::new(env);
-        data.extend_from_array(
-            &issuer
-                .clone()
-                .to_xdr(env)
-                .to_array::<64>()
-                .unwrap_or([0u8; 64]),
-        );
-        data.extend_from_array(
-            &subject
-                .clone()
-                .to_xdr(env)
-                .to_array::<64>()
-                .unwrap_or([0u8; 64]),
-        );
+        data.append(&issuer.to_xdr(env));
+        data.append(&subject.to_xdr(env));
         data.push_back(type_tag);
         env.crypto().sha256(&data).into()
     }

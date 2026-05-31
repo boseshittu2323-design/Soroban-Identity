@@ -1,4 +1,4 @@
-import { StrKey, SorobanRpc, hash } from "@stellar/stellar-sdk";
+import { StrKey, SorobanRpc, hash, Address } from "@stellar/stellar-sdk";
 import type { CredentialType } from "./types";
 import { SorobanIdentityError } from "./errors";
 
@@ -122,6 +122,18 @@ export function computeCredentialId(
   subject: string,
   credentialType: CredentialType
 ): string {
-  const input = [issuer, subject, credentialType].join(":");
-  return Buffer.from(hash(Buffer.from(input))).toString("hex");
+  const typeTag = credentialType === "Kyc" ? 0 :
+                  credentialType === "Reputation" ? 1 :
+                  credentialType === "Achievement" ? 2 : 3;
+  
+  const issuerXdr = new Address(issuer).toScAddress().toXDR();
+  const subjectXdr = new Address(subject).toScAddress().toXDR();
+  
+  const data = Buffer.concat([
+    issuerXdr,
+    subjectXdr,
+    Buffer.from([typeTag])
+  ]);
+  
+  return Buffer.from(hash(data)).toString("hex");
 }
