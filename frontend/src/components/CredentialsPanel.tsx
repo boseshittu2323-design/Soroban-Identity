@@ -5,6 +5,7 @@ import { CredentialClient } from '../../../sdk/src';
 import { validateStellarAddress } from "../../../sdk/src/utils";
 import { getNetworkConfig } from '../network';
 import SkeletonCard from "./SkeletonCard";
+import FormField from "./FormField";
 import { formatTimestamp } from "../utils/formatDate";
 import { useWalletContext } from "../context/WalletContext";
 
@@ -590,24 +591,14 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
                 </span>
               </p>
               
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.85rem", fontWeight: 600 }}>
-                  Subject Address
-                </label>
-                <input
-                  placeholder="Subject address (G…)"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  style={{
-                    borderColor: issueErrors.subject ? "var(--error)" : undefined,
-                  }}
-                />
-                {issueErrors.subject && (
-                  <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.25rem" }}>
-                    {issueErrors.subject}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Subject Address"
+                placeholder="Subject address (G…)"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                error={issueErrors.subject}
+                style={{ marginBottom: "1rem" }}
+              />
 
               <div style={{ marginBottom: "1rem" }}>
                 <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.85rem", fontWeight: 600 }}>
@@ -666,25 +657,15 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
                 )}
               </div>
 
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.85rem", fontWeight: 600 }}>
-                  Expires At (Unix timestamp, 0 for no expiry)
-                </label>
-                <input
-                  type="number"
-                  placeholder="0"
-                  value={expiresAt}
-                  onChange={(e) => setExpiresAt(e.target.value)}
-                  style={{
-                    borderColor: issueErrors.expiresAt ? "var(--error)" : undefined,
-                  }}
-                />
-                {issueErrors.expiresAt && (
-                  <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.25rem" }}>
-                    {issueErrors.expiresAt}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Expires At (Unix timestamp, 0 for no expiry)"
+                type="number"
+                placeholder="0"
+                value={expiresAt}
+                onChange={(e) => setExpiresAt(e.target.value)}
+                error={issueErrors.expiresAt}
+                style={{ marginBottom: "1rem" }}
+              />
 
               <button onClick={handleIssue} disabled={issuing || Object.keys(issueErrors).length > 0}>
                 {issuing ? "Issuing…" : "Issue KYC Credential"}
