@@ -7,6 +7,7 @@ import type { ScoreHistoryEntry } from '../../../sdk/src/reputation';
 import type { DidDocument } from '../../../sdk/src/types';
 import { useAddressHistory } from '../hooks/useAddressHistory';
 import SkeletonCard from './SkeletonCard';
+import FormField from './FormField';
 import ReputationChart from './ReputationChart';
 import { formatTimestamp } from '../utils/formatDate';
 import { useWalletContext } from '../context/WalletContext';
@@ -490,30 +491,22 @@ export default function IdentityPanel() {
               </span>
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
-                  Min Score
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={minScore}
-                  onChange={(e) => setMinScore(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
-                  Min Reporters
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={minReporters}
-                  onChange={(e) => setMinReporters(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </div>
+              <FormField
+                label="Min Score"
+                type="number"
+                min={0}
+                value={minScore}
+                onChange={(e) => setMinScore(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <FormField
+                label="Min Reporters"
+                type="number"
+                min={1}
+                value={minReporters}
+                onChange={(e) => setMinReporters(e.target.value)}
+                style={{ flex: 1 }}
+              />
             </div>
             <button onClick={handleSybilCheck} disabled={checkingsSybil}>
               {checkingsSybil ? 'Checking…' : 'Run Sybil Check'}
