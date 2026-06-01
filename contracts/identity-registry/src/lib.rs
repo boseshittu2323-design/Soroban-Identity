@@ -20,6 +20,9 @@ pub enum ContractError {
     NotInitialized = 8,
 }
 
+/// Version returned by `ping` for deployment health checks.
+pub const CONTRACT_VERSION: u32 = 1;
+
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const IDENTITY: Symbol = symbol_short!("IDENTITY");
@@ -43,7 +46,7 @@ pub struct IdentityStorageStats {
 
 /// W3C-aligned DID document stored on-chain.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DidDocument {
     /// did:stellar:<address>
     pub id: String,
@@ -66,6 +69,11 @@ pub struct IdentityRegistry;
 
 #[contractimpl]
 impl IdentityRegistry {
+    /// Lightweight read-only liveness check used by deployment monitors.
+    pub fn ping(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     /// Initializes the identity registry with an admin address.
@@ -97,7 +105,11 @@ impl IdentityRegistry {
     ///
     /// # Errors
     /// Returns [`ContractError::Unauthorized`] if `current_admin` does not match the stored admin address.
-    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), ContractError> {
+    pub fn transfer_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), ContractError> {
         current_admin.require_auth();
         let stored: Address = env
             .storage()
@@ -112,6 +124,7 @@ impl IdentityRegistry {
             (ADMIN, symbol_short!("transfer")),
             (current_admin, new_admin),
         );
+        Ok(())
     }
 
     /// Upgrades the contract WASM to a new hash. Only the admin can call this.
@@ -123,7 +136,11 @@ impl IdentityRegistry {
     ///
     /// # Errors
     /// Returns [`ContractError::Unauthorized`] if `admin` does not match the stored admin address.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+    pub fn upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
         admin.require_auth();
         let stored: Address = env
             .storage()
@@ -246,10 +263,9 @@ impl IdentityRegistry {
         storage.extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
 
         // Hash the DID id + updated_at as a deterministic metadata fingerprint
-        let mut hash_input = Bytes::new(&env);
-        hash_input.extend_from_slice(&doc.id.clone().as_bytes());
+        let mut hash_input = Self::string_to_bytes(&env, &doc.id);
         hash_input.extend_from_array(&doc.updated_at.to_be_bytes());
-        let meta_hash = env.crypto().sha256(&hash_input);
+        let meta_hash = env.crypto().sha256(&hash_input).to_bytes();
         env.events().publish(
             (IDENTITY, symbol_short!("updated")),
             (controller, meta_hash),
@@ -308,6 +324,9 @@ impl IdentityRegistry {
     /// Returns [`ContractError::DidDeactivated`] if the DID has been deactivated.
     pub fn resolve_did(env: Env, controller: Address) -> Result<DidDocument, ContractError> {
         let key = Self::did_key(&env, &controller);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
         let doc: DidDocument = env
             .storage()
             .persistent()
@@ -329,6 +348,9 @@ impl IdentityRegistry {
     /// * `controller` - The Stellar address to check.
     pub fn has_active_did(env: Env, controller: Address) -> bool {
         let key = Self::did_key(&env, &controller);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        }
         match env.storage().persistent().get::<_, DidDocument>(&key) {
             Some(doc) => doc.active,
             None => false,
@@ -371,47 +393,47 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    fn did_key(env: &Env, controller: &Address) -> Bytes {
-        // Use the raw address bytes as the storage key
-        let mut key = Bytes::new(env);
-        key.extend_from_array(&[b'd', b'i', b'd', b':']);
-        // append address bytes — Address implements IntoVal<Env, Bytes> indirectly
-        // so we serialize via the env
-        let addr_bytes = controller.to_string().as_bytes();
-        key.extend_from_slice(&addr_bytes);
-        key
+    fn did_key(_env: &Env, controller: &Address) -> (Symbol, Address) {
+        (IDENTITY, controller.clone())
     }
 
     fn build_did_id(env: &Env, controller: &Address) -> Result<String, ContractError> {
-        // did:stellar:<bech32-address>
-        let prefix = String::from_str(env, "did:stellar:");
         let addr_str = controller.to_string();
-        let mut result = prefix.as_bytes();
-        result.extend_from_slice(&addr_str.as_bytes());
+        let mut addr_bytes = [0u8; 56];
+        addr_str.copy_into_slice(&mut addr_bytes);
+
+        let mut result = [0u8; 68];
+        result[..12].copy_from_slice(b"did:stellar:");
+        result[12..].copy_from_slice(&addr_bytes);
         let did = String::from_bytes(env, &result);
 
-        // Validate the format
         if !Self::validate_did_format(env, &did) {
-            return Err(ContractError::DidNotFound); // Use existing error for invalid format
+            return Err(ContractError::DidNotFound);
         }
 
         Ok(did)
     }
 
     fn validate_did_format(env: &Env, did: &String) -> bool {
-        let did_bytes = did.as_bytes();
-        let prefix = b"did:stellar:";
-        if did_bytes.len() < prefix.len() {
+        if did.len() != 68 {
             return false;
         }
-        // Check if it starts with "did:stellar:"
-        for i in 0..prefix.len() {
-            if did_bytes.get(i).unwrap() != prefix[i] {
+        let did_bytes = Self::string_to_bytes(env, did);
+        let prefix = b"did:stellar:";
+        for (i, expected) in prefix.iter().enumerate() {
+            if did_bytes.get(i as u32).unwrap() != *expected {
                 return false;
             }
         }
-        // Check that there's something after the prefix
-        did_bytes.len() > prefix.len()
+        true
+    }
+
+    fn string_to_bytes(env: &Env, value: &String) -> Bytes {
+        let mut result = Bytes::new(env);
+        let mut buffer = [0u8; 68];
+        value.copy_into_slice(&mut buffer[..value.len() as usize]);
+        result.extend_from_slice(&buffer[..value.len() as usize]);
+        result
     }
 }
 
@@ -421,6 +443,8 @@ impl IdentityRegistry {
 mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env, Map};
+    extern crate std;
+    use std::string::ToString;
 
     #[test]
     fn test_double_initialize_returns_error() {
@@ -485,6 +509,9 @@ mod tests {
 
         // The address part should match the controller
         let expected_addr = user.to_string();
+        let mut expected_addr_bytes = [0u8; 56];
+        expected_addr.copy_into_slice(&mut expected_addr_bytes);
+        let expected_addr = std::str::from_utf8(&expected_addr_bytes).unwrap();
         let addr_part = &did_str["did:stellar:".len()..];
         assert_eq!(addr_part, expected_addr);
     }

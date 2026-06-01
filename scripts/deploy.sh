@@ -38,7 +38,49 @@ case "$NETWORK" in
     ;;
 esac
 
-SOURCE_ACCOUNT="${STELLAR_SECRET_KEY:?Set STELLAR_SECRET_KEY}"
+# ─── Secret key security checks ─────────────────────────────────────────────
+# STELLAR_SECRET_KEY should always be injected by a secrets manager, never
+# typed into an interactive shell or stored in a .env file committed to git.
+#
+# Recommended approaches:
+#   GitHub Actions : store as a repository secret; access via ${{ secrets.STELLAR_SECRET_KEY }}
+#   AWS            : aws secretsmanager get-secret-value --secret-id stellar/deploy-key --query SecretString --output text
+#   HashiCorp Vault: vault kv get -field=key secret/stellar
+#   1Password CLI  : op read "op://vault/stellar-deploy/key"
+#
+# For mainnet deployments, strongly consider hardware wallet signing
+# (Ledger via stellar-hd-wallet) to avoid exposing the raw key at all.
+
+if [[ -z "${STELLAR_SECRET_KEY:-}" ]]; then
+  echo "Error: STELLAR_SECRET_KEY is not set."
+  echo "  Inject it from a secrets manager — do not paste it into your shell."
+  exit 1
+fi
+
+# Warn when shell history is recording (key may end up in ~/.bash_history etc.)
+if [[ -n "${HISTFILE:-}" ]] && [[ "${HISTCONTROL:-}" != *ignorespace* ]]; then
+  echo "WARNING: Shell history is active. If you exported STELLAR_SECRET_KEY in"
+  echo "         this terminal the raw key may be saved to: ${HISTFILE}"
+  echo "         Prefix the export with a space (HISTCONTROL=ignorespace) or use"
+  echo "         a secrets manager to avoid this."
+  echo ""
+fi
+
+# Extra gate for mainnet: require explicit acknowledgement and add a delay so
+# accidental runs can be aborted before any irreversible action is taken.
+if [[ "$NETWORK" == "mainnet" ]]; then
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "  WARNING: Deploying to MAINNET with a live secret key."
+  echo "  Verify that STELLAR_SECRET_KEY was injected from a"
+  echo "  secrets manager and is NOT present in CI logs, shell"
+  echo "  history, or any committed file."
+  echo "  Press Ctrl+C within 10 seconds to abort."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo ""
+  sleep 10
+fi
+
+SOURCE_ACCOUNT="$STELLAR_SECRET_KEY"
 
 # Retry configuration with exponential backoff
 MAX_RETRIES="${MAX_RETRIES:-3}"

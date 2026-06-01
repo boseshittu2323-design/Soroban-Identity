@@ -1,31 +1,25 @@
-// Standardised error envelope for the SDK + server layer (#249).
-//
-// Every SDK / server error is shaped as `SorobanIdentityError`, which
-// carries a stable `code` enum the caller can switch on, an optional
-// `details` map for structured context, and the original error
-// preserved for debugging. `ContractError` is intentionally a
-// sibling (not a subclass) of `SorobanIdentityError` because its
-// public `code` field is a *contract panic number* — different shape
-// from the envelope's string enum, and renaming it would be a
-// breaking change. Use `toEnvelope()` on either to get the
-// uniform JSON shape.
-
+/**
+ * Discriminator for {@link SorobanIdentityError}. Callers can branch on
+ * `err.code` to handle each class without parsing the message.
+ *
+ * - `NOT_FOUND` — record (DID, credential, reporter) does not exist
+ * - `UNAUTHORIZED` — caller is not authorised for the requested operation
+ * - `ALREADY_EXISTS` — creation conflicts; record already registered (#249)
+ * - `INVALID_INPUT` — caller-provided data failed schema/shape validation (#249)
+ * - `NETWORK_ERROR` — transport failure, RPC timeout, etc.
+ * - `CONTRACT_ERROR` — contract returned a non-zero error code or simulation failed
+ * - `RATE_LIMITED` — rate limit exhaustion (#254)
+ * - `VALIDATION_ERROR` — retained for backwards-compatibility
+ * - `UNKNOWN` — fallback when no other code fits
+ */
 export type SorobanErrorCode =
-  // Lookups
   | "NOT_FOUND"
-  // Auth surface (#253)
   | "UNAUTHORIZED"
-  // Creation conflicts (#249)
   | "ALREADY_EXISTS"
-  // Caller-provided data failed schema / shape validation (#249)
   | "INVALID_INPUT"
-  // RPC / Horizon connectivity failures
   | "NETWORK_ERROR"
-  // Soroban contract panics (translated by ContractError)
   | "CONTRACT_ERROR"
-  // Rate limit exhaustion (#254)
   | "RATE_LIMITED"
-  // Retained for backwards-compatibility with the previous code set
   | "VALIDATION_ERROR"
   | "UNKNOWN";
 
@@ -39,15 +33,38 @@ function isInitObject(v: unknown): v is SorobanIdentityErrorInit {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/**
+ * SDK-level error wrapping all client-side failure paths.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await identity.createDid(keypair);
+ * } catch (err) {
+ *   if (err instanceof SorobanIdentityError && err.code === 'VALIDATION_ERROR') {
+ *     // a DID already exists for this address
+ *   }
+ *   throw err;
+ * }
+ * ```
+ */
 export class SorobanIdentityError extends Error {
+  /** Discriminator code — see {@link SorobanErrorCode}. */
   readonly code: SorobanErrorCode;
   readonly details?: Record<string, unknown>;
+  /** The underlying error, if this wraps one. */
   readonly originalError?: unknown;
 
-  /** Backwards-compatible positional signature:
-   *  `new SorobanIdentityError(msg, codeString, originalError)`.
-   *  New init-object signature:
-   *  `new SorobanIdentityError(msg, { code, details, originalError })`. */
+  /**
+   * Backwards-compatible positional signature:
+   *   `new SorobanIdentityError(msg, codeString, originalError)`.
+   * Init-object signature:
+   *   `new SorobanIdentityError(msg, { code, details, originalError })`.
+   *
+   * @param message       Human-readable error message.
+   * @param codeOrInit    {@link SorobanErrorCode} or init object. Defaults to `'UNKNOWN'`.
+   * @param originalError Optional wrapped error (positional form only).
+   */
   constructor(
     message: string,
     codeOrInit: SorobanErrorCode | SorobanIdentityErrorInit = "UNKNOWN",
@@ -74,15 +91,36 @@ export class SorobanIdentityError extends Error {
   }
 }
 
+/**
+ * A typed contract-level error parsed from an RPC simulation failure.
+ *
+ * Use {@link ContractError.extract} to decode a `#N` marker out of an error
+ * string and look up its human-readable description from a contract-specific
+ * error map (e.g. `CREDENTIAL_MANAGER_ERRORS`).
+ */
 export class ContractError extends Error {
+  /** The numeric error code returned by the contract. */
   readonly code: number;
 
+  /**
+   * @param code     Numeric contract error code.
+   * @param errorMap Map of code → human-readable description.
+   */
   constructor(code: number, errorMap: Record<number, string>) {
     super(errorMap[code] ?? `Contract error code ${code}`);
     this.name = "ContractError";
     this.code = code;
   }
 
+  /**
+   * Parse the first `#N` marker out of an error string and return a typed
+   * `ContractError`. Returns `null` when no marker is present (e.g. the error
+   * is a transport failure, not a contract-level abort).
+   *
+   * @param errMsg   The raw error string from a simulation failure.
+   * @param errorMap Contract-specific code → description map.
+   * @returns The decoded {@link ContractError}, or `null` if no marker found.
+   */
   static extract(errMsg: string, errorMap: Record<number, string>): ContractError | null {
     const match = errMsg.match(/#(\d+)/);
     if (!match) return null;

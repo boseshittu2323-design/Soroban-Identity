@@ -1,7 +1,9 @@
 import { useState, useEffect, useReducer } from "react";
-import { StrKey } from '@stellar/stellar-sdk';
-import type { CredentialType } from "../../../sdk/src/types";
+import { StrKey, SorobanRpc, TransactionBuilder, BASE_FEE, nativeToScVal, Contract, scValToNative } from '@stellar/stellar-sdk';
+import type { CredentialType, Credential, VerifyResult } from "../../../sdk/src/types";
+import { CredentialClient } from '../../../sdk/src';
 import { validateStellarAddress } from "../../../sdk/src/utils";
+import { getNetworkConfig } from '../network';
 import SkeletonCard from "./SkeletonCard";
 import { formatTimestamp } from "../utils/formatDate";
 import { useWalletContext } from "../context/WalletContext";
@@ -16,7 +18,7 @@ type VerifyState =
 
 type FilterType = "All" | CredentialType;
 type CredentialStatus = "active" | "expired" | "revoked";
-type DemoCredential = {
+type Credential = {
   id: string;
   credentialType: CredentialType;
   subject: string;
@@ -71,7 +73,7 @@ function isExpired(expiresAt: number): boolean {
   return expiresAt > 0 && Date.now() / 1000 > expiresAt;
 }
 
-function getCredentialStatus(credential: DemoCredential): CredentialStatus {
+function getCredentialStatus(credential: Credential): CredentialStatus {
   if (credential.revoked) return "revoked";
   if (isExpired(credential.expiresAt)) return "expired";
   return "active";
@@ -89,7 +91,7 @@ function getStatusLabel(status: CredentialStatus): string {
   return "Active";
 }
 
-function getStatusSortRank(credential: DemoCredential): number {
+function getStatusSortRank(credential: Credential): number {
   const status = getCredentialStatus(credential);
   if (status === "active") return 0;
   if (status === "expired") return 1;
@@ -97,7 +99,7 @@ function getStatusSortRank(credential: DemoCredential): number {
 }
 
 // Mock credentials for demonstration — replace with SDK data when wired
-const MOCK_CREDENTIALS: DemoCredential[] = [
+const MOCK_CREDENTIALS: Credential[] = [
   { id: "abc001", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { name: "John Doe", country: "US" }, claimsHash: "hash1", signature: "sig1", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: 0, revoked: false },
   { id: "abc002", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { verified: "true" }, claimsHash: "hash2", signature: "sig2", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 12 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
   { id: "abc003", credentialType: "Reputation", subject: "GABC…", issuer: "GISSUER", claims: { score: "850", level: "gold" }, claimsHash: "hash3", signature: "sig3", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
@@ -115,7 +117,7 @@ const CREDENTIAL_TYPE_ICONS: Record<CredentialType, string> = {
   Custom: "📋",
 };
 
-function countByType(creds: DemoCredential[], type: FilterType): number {
+function countByType(creds: Credential[], type: FilterType): number {
   if (type === "All") return creds.length;
   return creds.filter((c) => c.credentialType === type).length;
 }
@@ -123,12 +125,12 @@ function countByType(creds: DemoCredential[], type: FilterType): number {
 type CredentialState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'success'; credentials: DemoCredential[]; searchedAddress: string }
+  | { status: 'success'; credentials: Credential[]; searchedAddress: string }
   | { status: 'error'; message: string };
 
 type CredentialAction =
   | { type: 'FETCH_START' }
-  | { type: 'FETCH_SUCCESS'; credentials: DemoCredential[]; searchedAddress: string }
+  | { type: 'FETCH_SUCCESS'; credentials: Credential[]; searchedAddress: string }
   | { type: 'FETCH_ERROR'; message: string }
   | { type: 'RESET' };
 
@@ -172,16 +174,11 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     setVerifying(true);
     setVerifyState("idle");
     try {
-      // TODO: wire CredentialClient.verifyCredential() from SDK
-      await new Promise((r) => setTimeout(r, 800));
-      const mockResult = credId.startsWith("0")
-        ? { valid: false as const, reason: "revoked" as const }
-        : { valid: true as const };
-      if (mockResult.valid) {
-        setVerifyState("valid");
-      } else {
-        setVerifyState(mockResult.reason);
-      }
+      const networkConfig = getNetworkConfig();
+      const credentialClient = new CredentialClient(networkConfig);
+      const caller = wallet.publicKey || "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+      const result = await credentialClient.verifyCredential(caller, credId.trim());
+      setVerifyState(result.valid ? "valid" : result.reason || "invalid");
     } catch {
       setVerifyState("invalid");
     } finally {
@@ -240,10 +237,10 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     
     dispatchCredential({ type: 'FETCH_START' });
     try {
-      // TODO: wire CredentialClient.getCredentialsBySubject() from SDK
-      // const credentials = new CredentialClient(networkConfig);
-      await new Promise((r) => setTimeout(r, 600));
-      const results = MOCK_CREDENTIALS.filter((c) => c.subject === addr);
+      const networkConfig = getNetworkConfig();
+      const credentialClient = new CredentialClient(networkConfig);
+      const caller = wallet.publicKey || "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+      const results = await credentialClient.getCredentialsBySubject(caller, addr);
       dispatchCredential({ type: 'FETCH_SUCCESS', credentials: results, searchedAddress: addr });
     } catch (e: unknown) {
       dispatchCredential({ type: 'FETCH_ERROR', message: e instanceof Error ? e.message : String(e) });
@@ -314,15 +311,57 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     setIssuing(true);
     setIssueResult(null);
     try {
-      // TODO: build tx via CredentialClient, sign via wallet.signTransaction(), submit
-      await new Promise((r) => setTimeout(r, 1000));
-      const mockId = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-      const mockFee = 100;
-      setIssueResult(
-        `Credential issued.\nID: ${mockId}\nEstimated fee: ${mockFee} stroops (${(mockFee / 10_000_000).toFixed(7)} XLM)`
-      );
+      const networkConfig = getNetworkConfig();
+      const server = new SorobanRpc.Server(typeof networkConfig.rpcUrl === 'string' ? networkConfig.rpcUrl : networkConfig.rpcUrl[0]);
+      const contract = new Contract(networkConfig.credentialManagerId);
+      const account = await server.getAccount(wallet.publicKey);
+      
+      const claimsMap = claims.reduce((acc, { key, value }) => {
+        if (key.trim() && value.trim()) acc[key.trim()] = value.trim();
+        return acc;
+      }, {} as Record<string, string>);
+      
+      const claimsHashHex = "0000000000000000000000000000000000000000000000000000000000000000";
+      const sigHex = Buffer.alloc(64, 0).toString("hex");
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: networkConfig.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "issue_credential",
+            nativeToScVal(wallet.publicKey, { type: "address" }),
+            nativeToScVal(subject.trim(), { type: "address" }),
+            nativeToScVal("Kyc", { type: "symbol" }),
+            nativeToScVal(claimsMap, { type: "map" }),
+            nativeToScVal(Buffer.from(claimsHashHex, "hex"), { type: "bytes" }),
+            nativeToScVal(Buffer.from(sigHex, "hex"), { type: "bytes" }),
+            nativeToScVal(parseInt(expiresAt || "0", 10), { type: "u64" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const estimatedFee = parseInt(prepared.fee, 10);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, networkConfig.networkPassphrase);
+      const result = await server.sendTransaction(signedTx as any);
+      
+      if (result.status !== "PENDING") throw new Error(`Transaction failed: ${result.status}`);
+      
+      let txStatus = await server.getTransaction(result.hash);
+      while (txStatus.status === "NOT_FOUND") {
+        await new Promise(r => setTimeout(r, 2000));
+        txStatus = await server.getTransaction(result.hash);
+      }
+      if (txStatus.status === "FAILED") throw new Error("Transaction failed on-chain");
+      
+      const raw = scValToNative((txStatus as any).returnValue) as Uint8Array;
+      const mockId = Buffer.from(raw).toString("hex");
+      
+      setIssueResult(`Credential issued successfully!\nID: ${mockId}\nEstimated fee: ${(estimatedFee / 10_000_000).toFixed(7)} XLM`);
     } catch (e: unknown) {
       setIssueResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

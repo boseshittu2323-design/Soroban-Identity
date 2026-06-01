@@ -104,3 +104,12 @@ fn reputation_lifecycle_and_sybil_gate() {
     assert_eq!(record.score, 0);
     assert!(!reputation.passes_sybil_check(&subject, &50, &1));
 }
+#[test]
+fn contracts_expose_ping_version() {
+    let env = Env::default();
+    let (identity, credentials, reputation) = register_clients(&env);
+
+    assert_eq!(identity.ping(), 1);
+    assert_eq!(credentials.ping(), 1);
+    assert_eq!(reputation.ping(), 1);
+}

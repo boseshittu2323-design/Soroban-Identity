@@ -1,4 +1,4 @@
-import { StrKey, SorobanRpc, hash } from "@stellar/stellar-sdk";
+import { StrKey, SorobanRpc, hash, Address } from "@stellar/stellar-sdk";
 import type { CredentialType } from "./types";
 import { SorobanIdentityError } from "./errors";
 
@@ -40,9 +40,16 @@ export async function retryWithBackoff<T>(
 export async function pollTransactionStatus(
   server: SorobanRpc.Server,
   hash: string,
-  maxAttempts = 10,
-  intervalMs = 2000
+  options?: {
+    maxAttempts?: number;
+    intervalMs?: number;
+    exponentialBackoff?: boolean;
+  }
 ): Promise<void> {
+  const maxAttempts = options?.maxAttempts ?? 10;
+  const exponentialBackoff = options?.exponentialBackoff ?? true;
+  let intervalMs = options?.intervalMs ?? 2000;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await delay(intervalMs);
     const status = await server.getTransaction(hash);
@@ -52,6 +59,10 @@ export async function pollTransactionStatus(
     }
     if (status.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
       throw new SorobanIdentityError(`Transaction failed on-chain: ${(status as any).resultXdr || 'unknown error'}`, "CONTRACT_ERROR");
+    }
+
+    if (exponentialBackoff) {
+      intervalMs *= 2;
     }
   }
   throw new SorobanIdentityError("Transaction confirmation timeout", "NETWORK_ERROR");
@@ -75,8 +86,11 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Validates a Stellar address using StrKey.
- * Throws an InvalidAddress error with a descriptive message if the address is invalid.
+ * Validates a Stellar address using `StrKey`.
+ *
+ * @param address The Stellar address (G…) to validate.
+ * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` when the address
+ *   is not a valid ed25519 public key.
  */
 export function validateStellarAddress(address: string): void {
   if (!StrKey.isValidEd25519PublicKey(address)) {
@@ -86,10 +100,12 @@ export function validateStellarAddress(address: string): void {
 
 /**
  * Checks if the RPC connection is healthy.
- * Returns false on any network or server error without throwing.
  *
- * @param server - SorobanRpc.Server instance
- * @returns Promise<boolean> - true if connection is healthy, false otherwise
+ * Returns `false` on any network or server error without throwing — useful for
+ * health probes that should never surface transport noise.
+ *
+ * @param server A {@link SorobanRpc.Server} instance to probe.
+ * @returns `true` when `getLatestLedger()` succeeds, `false` on any error.
  */
 export async function checkConnection(server: SorobanRpc.Server): Promise<boolean> {
   try {
@@ -102,15 +118,37 @@ export async function checkConnection(server: SorobanRpc.Server): Promise<boolea
 
 /**
  * Deterministically computes a credential ID from issuer, subject, and type.
- * Mirrors the derivation used by the credential-manager contract.
  *
- * @returns 64-character hex string (32-byte SHA-256 hash)
+ * Mirrors the derivation used by the credential-manager contract so a client
+ * can predict the ID before submitting `issue_credential`.
+ *
+ * @param issuer         Registered issuer Stellar address.
+ * @param subject        Subject Stellar address.
+ * @param credentialType Credential category — see {@link CredentialType}.
+ * @returns 64-character hex string (32-byte SHA-256 hash).
+ *
+ * @example
+ * ```ts
+ * const id = computeCredentialId(issuer, subject, 'Kyc');
+ * ```
  */
 export function computeCredentialId(
   issuer: string,
   subject: string,
   credentialType: CredentialType
 ): string {
-  const input = [issuer, subject, credentialType].join(":");
-  return Buffer.from(hash(Buffer.from(input))).toString("hex");
+  const typeTag = credentialType === "Kyc" ? 0 :
+                  credentialType === "Reputation" ? 1 :
+                  credentialType === "Achievement" ? 2 : 3;
+  
+  const issuerXdr = new Address(issuer).toScAddress().toXDR();
+  const subjectXdr = new Address(subject).toScAddress().toXDR();
+  
+  const data = Buffer.concat([
+    issuerXdr,
+    subjectXdr,
+    Buffer.from([typeTag])
+  ]);
+  
+  return Buffer.from(hash(data)).toString("hex");
 }

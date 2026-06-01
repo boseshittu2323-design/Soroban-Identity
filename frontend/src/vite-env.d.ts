@@ -11,4 +11,5 @@ interface ImportMetaEnv {
   readonly VITE_MAINNET_CREDENTIAL_MANAGER_ID?: string;
   readonly VITE_MAINNET_REPUTATION_ID?: string;
   readonly VITE_WALLETCONNECT_PROJECT_ID?: string;
+  readonly VITE_EVENTS_URL?: string;
 }

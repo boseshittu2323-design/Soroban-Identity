@@ -11,6 +11,9 @@ import ReputationChart from './ReputationChart';
 import { formatTimestamp } from '../utils/formatDate';
 import { useWalletContext } from '../context/WalletContext';
 import { exportDidDocumentAsJsonLd } from '../../../sdk/src/serializers';
+import { SorobanRpc, TransactionBuilder, BASE_FEE, nativeToScVal, Contract } from '@stellar/stellar-sdk';
+import { IdentityClient, ReputationClient } from '../../../sdk/src';
+import { getNetworkConfig } from '../network';
 
 type IdentityState =
   | { status: 'idle' }
@@ -94,42 +97,21 @@ export default function IdentityPanel() {
     dispatch({ type: 'FETCH_START' });
     setSybilResult(null);
     try {
-      // TODO: wire IdentityClient.resolveDid() from SDK
-      // const identity = new IdentityClient(networkConfig);
-      await new Promise((r) => setTimeout(r, 800));
-      const mock: DidDocument = {
-        id: `did:stellar:${address}`,
-        controller: address,
-        metadata: {},
-        createdAt: Math.floor(Date.now() / 1000),
-        updatedAt: Math.floor(Date.now() / 1000),
-        active: true,
-      };
+      const networkConfig = getNetworkConfig();
+      const identityClient = new IdentityClient(networkConfig);
+      const didDoc = await identityClient.resolveDid(address);
 
       let resolvedRep: ReputationRecord | null = null;
       let resolvedHistory: ScoreHistoryEntry[] = [];
       try {
-        // TODO: wire ReputationClient.getReputation() from SDK
-        await new Promise((r) => setTimeout(r, 600));
-        resolvedRep = {
-          subject: address,
-          score: 42,
-          reporterCount: 3,
-          updatedAt: Math.floor(Date.now() / 1000),
-        };
-        // TODO: wire ReputationClient.getScoreHistory() from SDK
-        const now = Math.floor(Date.now() / 1000);
-        resolvedHistory = [
-          { reporter: address, delta: 10, reason: "KYC verified", submittedAt: now - 30 * 86400 },
-          { reporter: address, delta: -5, reason: "Dispute", submittedAt: now - 20 * 86400 },
-          { reporter: address, delta: 20, reason: "Achievement", submittedAt: now - 10 * 86400 },
-          { reporter: address, delta: 17, reason: "Referral", submittedAt: now - 3 * 86400 },
-        ];
-      } catch {
+        const reputationClient = new ReputationClient(networkConfig);
+        resolvedRep = await reputationClient.getReputation(address, address);
+        resolvedHistory = await reputationClient.getScoreHistory(address, address, address);
+      } catch (e) {
         // reputation fetch failed — proceed with null
       }
 
-      dispatch({ type: 'FETCH_SUCCESS', did: mock, reputation: resolvedRep, scoreHistory: resolvedHistory });
+      dispatch({ type: 'FETCH_SUCCESS', did: didDoc, reputation: resolvedRep, scoreHistory: resolvedHistory });
     } catch (e: unknown) {
       dispatch({
         type: 'FETCH_ERROR',
@@ -195,11 +177,46 @@ export default function IdentityPanel() {
     setCreating(true);
     setCreateResult(null);
     try {
-      // TODO: build tx via IdentityClient, sign via wallet.signTransaction(), submit
-      await new Promise((r) => setTimeout(r, 1000));
-      const mockFee = 100;
+      const networkConfig = getNetworkConfig();
+      const server = new SorobanRpc.Server(typeof networkConfig.rpcUrl === 'string' ? networkConfig.rpcUrl : networkConfig.rpcUrl[0]);
+      const contract = new Contract(networkConfig.identityRegistryId);
+      const account = await server.getAccount(wallet.publicKey);
+      
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: networkConfig.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "create_did",
+            nativeToScVal(wallet.publicKey, { type: "address" }),
+            nativeToScVal({}, { type: "map" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const estimatedFee = parseInt(prepared.fee, 10);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, networkConfig.networkPassphrase);
+      const result = await server.sendTransaction(signedTx as any);
+      
+      if (result.status !== "PENDING") {
+        throw new Error(`Transaction failed: ${result.status}`);
+      }
+      
+      let txStatus = await server.getTransaction(result.hash);
+      while (txStatus.status === "NOT_FOUND") {
+        await new Promise(r => setTimeout(r, 2000));
+        txStatus = await server.getTransaction(result.hash);
+      }
+      if (txStatus.status === "FAILED") {
+        throw new Error("Transaction failed on-chain");
+      }
+      
       setCreateResult(
-        `DID created: did:stellar:${wallet.publicKey}\nEstimated fee: ${mockFee} stroops (${(mockFee / 10_000_000).toFixed(7)} XLM)`
+        `DID created: did:stellar:${wallet.publicKey}\nEstimated fee: ${estimatedFee} stroops (${(estimatedFee / 10_000_000).toFixed(7)} XLM)`
       );
     } catch (e: unknown) {
       setCreateResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -231,17 +248,46 @@ export default function IdentityPanel() {
         }
       });
 
-      // TODO: build update_did tx via IdentityClient with metadata, sign + submit
-      await new Promise((r) => setTimeout(r, 1000));
-      await new Promise((r) => setTimeout(r, 800));
-      const updatedDid: DidDocument = {
-        id: `did:stellar:${wallet.publicKey}`,
-        controller: wallet.publicKey!,
-        metadata,
-        createdAt: Math.floor(Date.now() / 1000),
-        updatedAt: Math.floor(Date.now() / 1000),
-        active: true,
-      };
+      const networkConfig = getNetworkConfig();
+      const server = new SorobanRpc.Server(typeof networkConfig.rpcUrl === 'string' ? networkConfig.rpcUrl : networkConfig.rpcUrl[0]);
+      const contract = new Contract(networkConfig.identityRegistryId);
+      const account = await server.getAccount(wallet.publicKey);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: networkConfig.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "update_did",
+            nativeToScVal(wallet.publicKey, { type: "address" }),
+            nativeToScVal(metadata, { type: "map" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, networkConfig.networkPassphrase);
+      const result = await server.sendTransaction(signedTx as any);
+      
+      if (result.status !== "PENDING") {
+        throw new Error(`Transaction failed: ${result.status}`);
+      }
+      
+      let txStatus = await server.getTransaction(result.hash);
+      while (txStatus.status === "NOT_FOUND") {
+        await new Promise(r => setTimeout(r, 2000));
+        txStatus = await server.getTransaction(result.hash);
+      }
+      if (txStatus.status === "FAILED") {
+        throw new Error("Transaction failed on-chain");
+      }
+      
+      const identityClient = new IdentityClient(networkConfig);
+      const updatedDid = await identityClient.resolveDid(wallet.publicKey);
+      
       dispatch({ type: 'FETCH_SUCCESS', did: updatedDid, reputation: null, scoreHistory: [] });
       setUpdateSuccess(true);
       setTimeout(() => setUpdateSuccess(false), 3000);
@@ -257,10 +303,14 @@ export default function IdentityPanel() {
     setCheckingSybil(true);
     setSybilResult(null);
     try {
-      // TODO: wire ReputationClient.passesSybilCheck() from SDK
-      await new Promise((r) => setTimeout(r, 800));
-      // Mock: passes if minScore <= 100 and minReporters <= 5
-      const passes = Number(minScore) <= 100 && Number(minReporters) <= 5;
+      const networkConfig = getNetworkConfig();
+      const reputationClient = new ReputationClient(networkConfig);
+      const passes = await reputationClient.passesSybilCheck(
+        resolvedAddress,
+        resolvedAddress,
+        Number(minScore),
+        Number(minReporters)
+      );
       setSybilResult(passes);
     } catch (e: unknown) {
       setSybilResult(null);
