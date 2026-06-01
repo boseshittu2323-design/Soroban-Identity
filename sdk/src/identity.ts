@@ -436,4 +436,37 @@ export class IdentityClient extends BaseClient {
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as IdentityStorageStats;
   }
+
+  /**
+   * Liveness probe — calls the on-chain `ping()` function.
+   *
+   * Returns the contract's `CONTRACT_VERSION` constant. Throws if the contract
+   * is not deployed or not responding.
+   *
+   * @param options Per-call overrides (currently `timeoutSeconds`).
+   * @returns The contract version number (currently `1`).
+   * @throws {SorobanIdentityError} with code `CONTRACT_ERROR` if the contract
+   *   does not respond.
+   */
+  async ping(options?: CallOptions): Promise<number> {
+    const account = new Account(PROBE_ADDRESS, "0");
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(this.contract.call("ping"))
+      .setTimeout(timeout)
+      .build();
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      throw new SorobanIdentityError(
+        "Health check failed: identity-registry not responding",
+        "CONTRACT_ERROR"
+      );
+    }
+    return scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as number;
+  }
 }
