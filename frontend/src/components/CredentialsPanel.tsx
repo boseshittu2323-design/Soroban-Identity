@@ -100,15 +100,7 @@ function getStatusSortRank(credential: Credential): number {
   return 2;
 }
 
-// Mock credentials for demonstration — replace with SDK data when wired
-const MOCK_CREDENTIALS: Credential[] = [
-  { id: "abc001", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { name: "John Doe", country: "US" }, claimsHash: "hash1", signature: "sig1", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: 0, revoked: false },
-  { id: "abc002", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { verified: "true" }, claimsHash: "hash2", signature: "sig2", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 12 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
-  { id: "abc003", credentialType: "Reputation", subject: "GABC…", issuer: "GISSUER", claims: { score: "850", level: "gold" }, claimsHash: "hash3", signature: "sig3", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
-  { id: "abc004", credentialType: "Achievement", subject: "GABC…", issuer: "GISSUER", claims: {}, claimsHash: "hash4", signature: "sig4", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() - 5 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
-  { id: "abc005", credentialType: "Custom", subject: "GABC…", issuer: "GISSUER", claims: { custom_field: "custom_value" }, claimsHash: "hash5", signature: "sig5", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000), revoked: true },
-  { id: "abc006", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { reason: "compromised" }, claimsHash: "hash6", signature: "sig6", issuedAt: Math.floor(Date.now() / 1000) - 2000, expiresAt: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000), revoked: true },
-];
+// TODO: integrate SDK — replace with CredentialClient.getCredentialsBySubject() (see issue #226)
 
 const FILTER_OPTIONS: FilterType[] = ["All", "Kyc", "Reputation", "Achievement", "Custom"];
 
@@ -291,7 +283,7 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     setClaims(updated);
   };
 
-  const displayCredentials = fetchedCredentials ?? MOCK_CREDENTIALS;
+  const displayCredentials = fetchedCredentials ?? [];
 
   const filteredCredentials =
     activeFilter === "All"
@@ -358,9 +350,9 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
       if (txStatus.status === "FAILED") throw new Error("Transaction failed on-chain");
       
       const raw = scValToNative((txStatus as any).returnValue) as Uint8Array;
-      const mockId = Buffer.from(raw).toString("hex");
+      const credentialId = Buffer.from(raw).toString("hex");
       
-      setIssueResult(`Credential issued successfully!\nID: ${mockId}\nEstimated fee: ${(estimatedFee / 10_000_000).toFixed(7)} XLM`);
+      setIssueResult(`Credential issued successfully!\nID: ${credentialId}\nEstimated fee: ${(estimatedFee / 10_000_000).toFixed(7)} XLM`);
     } catch (e: unknown) {
       setIssueResult(`Error: ${handleError(e)}`);
     } finally {
