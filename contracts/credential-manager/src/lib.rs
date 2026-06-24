@@ -17,6 +17,8 @@ const CRED: Symbol = symbol_short!("CRED");
 const SUBJECT: Symbol = symbol_short!("sub");
 const CRED_CNT: Symbol = symbol_short!("CREDCNT");
 const REVOKED_CNT: Symbol = symbol_short!("REVCNT");
+/// Secondary index: maps each issuer address to the IDs it has issued.
+const ISSUER_CREDS: Symbol = symbol_short!("ISSCREDS");
 
 const MAX_ISSUERS: u32 = 100;
 
@@ -340,6 +342,15 @@ impl CredentialManager {
         env.storage()
             .persistent()
             .extend_ttl(&subject_key, TTL_MAX, TTL_MAX);
+
+        // Index credential under issuer for reverse lookup
+        let mut issuer_creds = Self::fetch_issuer_creds(&env, &issuer);
+        issuer_creds.push_back(id.clone());
+        let issuer_creds_key = Self::issuer_creds_key(&issuer);
+        env.storage().persistent().set(&issuer_creds_key, &issuer_creds);
+        env.storage()
+            .persistent()
+            .extend_ttl(&issuer_creds_key, TTL_MAX, TTL_MAX);
 
         // Increment per-subject credential counter
         let cnt_key = (CRED_CNT, subject.clone());
@@ -674,6 +685,66 @@ impl CredentialManager {
         }
     }
 
+    /// Returns all credential IDs issued by a given issuer address.
+    ///
+    /// The list includes both active and revoked credential IDs. Use
+    /// [`Self::verify_credential`] to check the status of each ID.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `issuer` - The issuer address whose credential IDs to retrieve.
+    pub fn get_issuer_credentials(env: Env, issuer: Address) -> Vec<BytesN<32>> {
+        Self::fetch_issuer_creds(&env, &issuer)
+    }
+
+    /// Returns one page of credential IDs issued by a given issuer, ordered by
+    /// issuance.
+    ///
+    /// Pagination follows the same cursor model as
+    /// [`Self::list_subject_credentials`]: `cursor` is the zero-based start
+    /// index, `limit` is the page size (clamped to [`PAGE_CAP`], `0` →
+    /// `PAGE_CAP`). `next_cursor` is `None` when the iterator is exhausted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `issuer` - The issuer address whose credential IDs to retrieve.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    pub fn list_issuer_credentials(
+        env: Env,
+        issuer: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> CredentialIdsPage {
+        let all = Self::fetch_issuer_creds(&env, &issuer);
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<BytesN<32>> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            items.push_back(all.get(next as u32).unwrap());
+            next += 1;
+            taken += 1;
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        CredentialIdsPage { items, next_cursor }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Canonical init guard — see `contracts/README.md`.
@@ -723,6 +794,21 @@ impl CredentialManager {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn fetch_issuer_creds(env: &Env, issuer: &Address) -> Vec<BytesN<32>> {
+        let key = Self::issuer_creds_key(issuer);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_MAX, TTL_MAX);
+        }
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn issuer_creds_key(issuer: &Address) -> (Symbol, Address) {
+        (ISSUER_CREDS, issuer.clone())
     }
 
     fn derive_id(
@@ -1388,7 +1474,7 @@ mod tests {
     /// Storage namespace symbols must be pairwise distinct.
     #[test]
     fn test_storage_key_symbols_are_unique() {
-        let keys = [ADMIN, ISSUER, CRED, SUBJECT, CRED_CNT, REVOKED_CNT];
+        let keys = [ADMIN, ISSUER, CRED, SUBJECT, CRED_CNT, REVOKED_CNT, ISSUER_CREDS];
         for (i, left) in keys.iter().enumerate() {
             for right in keys.iter().skip(i + 1) {
                 assert_ne!(left, right);

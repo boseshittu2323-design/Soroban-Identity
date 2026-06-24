@@ -34,6 +34,8 @@ import {
   buildGetCredentialCountArgs,
   buildListSubjectCredentialsArgs,
   buildListIssuersArgs,
+  buildGetIssuerCredentialsArgs,
+  buildListIssuerCredentialsArgs,
 } from "./contract-args";
 
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
@@ -763,6 +765,149 @@ export class CredentialClient extends BaseClient {
     ) as { items: string[]; next_cursor: number | null };
 
     return { items: raw.items, nextCursor: raw.next_cursor ?? null };
+  }
+
+  /**
+   * Get all credentials issued by an issuer address.
+   *
+   * Returns full credential records resolved via
+   * {@link CredentialClient.getCredential} for each ID from the issuer index.
+   * Includes revoked credentials — callers can drop them by inspecting
+   * `revoked`.
+   *
+   * **Note:** For large issuers use the paginated
+   * {@link CredentialClient.listCredentialsByIssuer}.
+   *
+   * @param callerAddress  Stellar address used to build the read simulation.
+   * @param issuerAddress  The issuer address whose credentials to retrieve.
+   * @param options        Per-call overrides (currently `timeoutSeconds`).
+   * @returns Array of {@link Credential} records issued by `issuerAddress`.
+   * @throws {SorobanIdentityError} on simulation failure.
+   *
+   * @example
+   * ```ts
+   * const issued = await credentials.getCredentialsByIssuer(caller, issuerAddress);
+   * const active = issued.filter(c => !c.revoked);
+   * ```
+   */
+  async getCredentialsByIssuer(
+    callerAddress: string,
+    issuerAddress: string,
+    options?: CallOptions
+  ): Promise<Credential[]> {
+    validateStellarAddress(callerAddress);
+    validateStellarAddress(issuerAddress);
+    const account = await this.server.getAccount(callerAddress);
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+
+    const idsTx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          'get_issuer_credentials',
+          ...buildGetIssuerCredentialsArgs({ issuer: issuerAddress })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const idsResult = await retryWithBackoff(() => this.server.simulateTransaction(idsTx));
+    const idsSimulationError = SorobanRpc.Api.isSimulationError(idsResult);
+    this.debug('sdk.simulation_result', { operation: 'credentials.getCredentialsByIssuer.ids', success: !idsSimulationError });
+    if (idsSimulationError) {
+      const errMsg = idsResult.error ?? '';
+      const contractErr = ContractError.extract(errMsg, CREDENTIAL_MANAGER_ERRORS);
+      if (contractErr) throw contractErr;
+      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
+    }
+
+    const ids = scValToNative(
+      (idsResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as Uint8Array[];
+
+    if (!ids || ids.length === 0) return [];
+
+    return Promise.all(
+      ids.map((raw) =>
+        this.getCredential(callerAddress, Buffer.from(raw).toString('hex'), options)
+      )
+    );
+  }
+
+  /**
+   * Cursor-paginated variant of {@link CredentialClient.getCredentialsByIssuer}.
+   *
+   * Returns credential IDs only. Use {@link CredentialClient.getCredential} to
+   * resolve full records as needed.
+   *
+   * @param callerAddress  Stellar address used to build the read-only simulation.
+   * @param issuerAddress  The issuer address whose credential IDs to retrieve.
+   * @param options        Pagination + per-call overrides.
+   * @returns Page of credential IDs (hex-encoded) with the next resume cursor.
+   * @throws {SorobanIdentityError} on simulation failure.
+   *
+   * @example
+   * ```ts
+   * let cursor: number | undefined;
+   * const ids: string[] = [];
+   * do {
+   *   const page = await credentials.listCredentialsByIssuer(caller, issuerAddress, {
+   *     cursor,
+   *     limit: 50,
+   *   });
+   *   ids.push(...page.items);
+   *   cursor = page.nextCursor ?? undefined;
+   * } while (cursor !== undefined);
+   * ```
+   */
+  async listCredentialsByIssuer(
+    callerAddress: string,
+    issuerAddress: string,
+    options?: PaginationOptions
+  ): Promise<Page<string>> {
+    validateStellarAddress(callerAddress);
+    validateStellarAddress(issuerAddress);
+    const account = await this.server.getAccount(callerAddress);
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const cursorArg = options?.cursor === undefined
+      ? nativeToScVal(null, { type: 'option' })
+      : nativeToScVal({ Some: options.cursor }, { type: { Some: ['u64'] } as never });
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          'list_issuer_credentials',
+          ...buildListIssuerCredentialsArgs({
+            issuer: issuerAddress,
+            cursor: cursorArg,
+            limit: options?.limit ?? 0,
+          })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      const errMsg = result.error ?? '';
+      const contractErr = ContractError.extract(errMsg, CREDENTIAL_MANAGER_ERRORS);
+      if (contractErr) throw contractErr;
+      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
+    }
+
+    const raw = scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as { items: Uint8Array[]; next_cursor: number | null };
+
+    return {
+      items: raw.items.map((b) => Buffer.from(b).toString('hex')),
+      nextCursor: raw.next_cursor ?? null,
+    };
   }
 
   /**

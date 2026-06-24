@@ -52,6 +52,8 @@ export {
   buildSubmitScoreArgs,
   buildListReportersArgs,
   buildListHistoryArgs,
+  buildGetIssuerCredentialsArgs,
+  buildListIssuerCredentialsArgs,
 } from './contract-args';
 export type {
   DidDocument,

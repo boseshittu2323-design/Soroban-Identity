@@ -128,6 +128,24 @@ export function buildListIssuersArgs(params: {
   ];
 }
 
+export function buildGetIssuerCredentialsArgs(params: {
+  issuer: string;
+}): xdr.ScVal[] {
+  return [nativeToScVal(params.issuer, { type: 'address' })];
+}
+
+export function buildListIssuerCredentialsArgs(params: {
+  issuer: string;
+  cursor: xdr.ScVal;
+  limit: number;
+}): xdr.ScVal[] {
+  return [
+    nativeToScVal(params.issuer, { type: 'address' }),
+    params.cursor,
+    nativeToScVal(params.limit, { type: 'u32' }),
+  ];
+}
+
 // ── reputation ───────────────────────────────────────────────────────────────
 
 export function buildGetReputationArgs(params: {
