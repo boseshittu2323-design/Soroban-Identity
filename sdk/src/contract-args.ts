@@ -61,7 +61,7 @@ export function buildIssueCredentialArgs(params: {
   claims: Record<string, string>;
   claimsHash: Buffer;
   signature: Buffer;
-  expiresAt: number;
+  expiresAt: bigint;
 }): xdr.ScVal[] {
   return [
     nativeToScVal(params.issuer, { type: 'address' }),
@@ -70,7 +70,7 @@ export function buildIssueCredentialArgs(params: {
     nativeToScVal(params.claims, { type: 'map' }),
     nativeToScVal(params.claimsHash, { type: 'bytes' }),
     nativeToScVal(params.signature, { type: 'bytes' }),
-    nativeToScVal(params.expiresAt, { type: 'u64' }),
+    xdr.ScVal.scvU64(xdr.Uint64.fromString(params.expiresAt.toString())),
   ];
 }
 
@@ -158,12 +158,12 @@ export function buildPassesSybilCheckDefaultArgs(params: {
 
 export function buildPassesSybilCheckArgs(params: {
   subject: string;
-  minScore: number;
+  minScore: bigint;
   minReporters: number;
 }): xdr.ScVal[] {
   return [
     nativeToScVal(params.subject, { type: 'address' }),
-    nativeToScVal(params.minScore, { type: 'i64' }),
+    xdr.ScVal.scvI64(xdr.Int64.fromString(params.minScore.toString())),
     nativeToScVal(params.minReporters, { type: 'u32' }),
   ];
 }
@@ -171,13 +171,13 @@ export function buildPassesSybilCheckArgs(params: {
 export function buildSubmitScoreArgs(params: {
   reporter: string;
   subject: string;
-  delta: number;
+  delta: bigint;
   reason: string;
 }): xdr.ScVal[] {
   return [
     nativeToScVal(params.reporter, { type: 'address' }),
     nativeToScVal(params.subject, { type: 'address' }),
-    nativeToScVal(params.delta, { type: 'i64' }),
+    xdr.ScVal.scvI64(xdr.Int64.fromString(params.delta.toString())),
     nativeToScVal(params.reason, { type: 'string' }),
   ];
 }

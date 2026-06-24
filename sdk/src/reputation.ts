@@ -72,6 +72,7 @@ export class ReputationClient extends BaseClient {
    * @param config SDK config including the deployed reputation contract ID.
    */
   constructor(config: SorobanIdentityConfig) {
+    validateConfig(config, { contractIdField: 'reputationId' });
     super(config, config.reputationId);
   }
 
@@ -369,7 +370,7 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'passes_sybil_check',
-          ...buildPassesSybilCheckArgs({ subject: subjectAddress, minScore, minReporters })
+          ...buildPassesSybilCheckArgs({ subject: subjectAddress, minScore: BigInt(minScore), minReporters })
         )
       )
       .setTimeout(timeout)
@@ -420,7 +421,7 @@ export class ReputationClient extends BaseClient {
       ...buildSubmitScoreArgs({
         reporter: reporterKeypair.publicKey(),
         subject: subjectAddress,
-        delta,
+        delta: BigInt(delta),
         reason,
       })
     );
