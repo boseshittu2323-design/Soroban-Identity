@@ -14,6 +14,7 @@ import type {
   PaginationOptions,
   ReputationStorageStats,
   SorobanIdentityConfig,
+  SorobanResponse,
   WriteResult,
 } from './types';
 import { validateConfig } from './types';
@@ -408,7 +409,7 @@ export class ReputationClient extends BaseClient {
     delta: number,
     reason: string,
     options?: CallOptions
-  ): Promise<WriteResult> {
+  ): Promise<SorobanResponse<WriteResult>> {
     const account = await this.server.getAccount(reporterKeypair.publicKey());
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
@@ -442,12 +443,13 @@ export class ReputationClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, 'CONTRACT_ERROR');
     }
 
-    await pollTransactionStatus(this.server, result.hash, {
+    const txHash = result.hash;
+    await pollTransactionStatus(this.server, txHash, {
       maxAttempts: this.config.pollingRetries,
       intervalMs: this.config.pollingIntervalMs,
       exponentialBackoff: this.config.pollingExponentialBackoff,
     });
-    return { estimatedFee, estimatedFeeXlm };
+    return { data: { estimatedFee, estimatedFeeXlm }, txHash };
   }
 
   /**

@@ -95,6 +95,17 @@ export interface WriteResult {
   estimatedFeeXlm: string;
 }
 
+/**
+ * Wrapper returned by all SDK write methods.
+ *
+ * `data` holds the method-specific return value (or `void`).
+ * `txHash` is the on-chain transaction hash that callers can use for
+ * auditing, linking, or querying the ledger directly.
+ *
+ * Read methods return `{ data: T }` without `txHash`.
+ */
+export type SorobanResponse<T> = { data: T; txHash: string };
+
 export interface IdentityStorageStats {
   totalDids: number;
   activeDids: number;

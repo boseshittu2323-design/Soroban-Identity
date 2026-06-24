@@ -139,6 +139,26 @@ export class ContractError extends Error {
 }
 
 /**
+ * Thrown by {@link CredentialClient.issueCredential} when a `schemaId` is
+ * supplied and the provided `claims` fail validation against the on-chain
+ * schema.
+ *
+ * `fieldErrors` maps each failing claim key to a human-readable message so
+ * callers can surface actionable feedback.
+ */
+export class ClaimsValidationError extends Error {
+  readonly code = "INVALID_INPUT" as const;
+  /** Per-field validation messages — key is the claim field path. */
+  readonly fieldErrors: Record<string, string>;
+
+  constructor(message: string, fieldErrors: Record<string, string>) {
+    super(message);
+    this.name = "ClaimsValidationError";
+    this.fieldErrors = fieldErrors;
+  }
+}
+
+/**
  * Map a free-form error message (panic string, RPC error message,
  * etc.) to the envelope code. Falls back to `UNKNOWN` so call sites
  * can wrap-and-rethrow without case explosion.

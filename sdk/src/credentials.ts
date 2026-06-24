@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative,
 } from "@stellar/stellar-sdk";
+import { createHash } from "node:crypto";
 import type {
   CallOptions,
   Credential,
@@ -17,12 +18,13 @@ import type {
   Page,
   PaginationOptions,
   SorobanIdentityConfig,
+  SorobanResponse,
   VerifyResult,
   WriteResult,
 } from "./types";
 import { validateConfig } from "./types";
 import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
-import { ContractError, SorobanIdentityError } from "./errors";
+import { ClaimsValidationError, ContractError, SorobanIdentityError } from "./errors";
 import { CREDENTIAL_MANAGER_ERRORS } from "./error-codes";
 import { BaseClient } from "./base-client";
 import {
@@ -116,15 +118,19 @@ export class CredentialClient extends BaseClient {
    * @param expiresAt       Unix timestamp (seconds) after which the credential
    *                        is invalid. Pass `0` for no expiry.
    * @param options         Per-call overrides (currently `timeoutSeconds`).
+   *                        Also accepts `nonce` (idempotency key, #295) and
+   *                        `schemaId` (claims validation, #298).
    * @param signatureHex    Optional pre-computed 64-byte issuer signature as a
    *                        128-char hex string. If omitted, the SDK signs over
    *                        `JSON.stringify({ subjectAddress, claims })`.
-   * @returns The newly assigned credential ID (hex-encoded 32 bytes) and the
-   *          estimated transaction fee.
+   * @returns `{ data: { credentialId, estimatedFee, estimatedFeeXlm }, txHash }`
+   *          where `txHash` is the on-chain transaction hash for auditing.
    * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` if
    *   `claimsHashHex` or `signatureHex` are malformed, or `CONTRACT_ERROR` on
    *   submission failure (including the `UnauthorizedIssuer` and
    *   `CredentialAlreadyExists` contract errors).
+   * @throws {ClaimsValidationError} when `schemaId` is provided and `claims`
+   *   fail validation against the fetched schema.
    */
   async issueCredential(
     issuerKeypair: Keypair,
@@ -133,9 +139,9 @@ export class CredentialClient extends BaseClient {
     claims: Record<string, string>,
     claimsHashHex: string,
     expiresAt = 0,
-    options?: CallOptions,
+    options?: CallOptions & { nonce?: string; schemaId?: string },
     signatureHex?: string
-  ): Promise<{ credentialId: string } & WriteResult> {
+  ): Promise<SorobanResponse<{ credentialId: string } & WriteResult>> {
     if (!/^[0-9a-fA-F]{64}$/.test(claimsHashHex)) {
       throw new SorobanIdentityError(
         "InvalidClaimsHashFormat: claimsHash must be a 64-character hex string (32 bytes)",
@@ -152,18 +158,28 @@ export class CredentialClient extends BaseClient {
       }
     }
 
+    // #298 — validate claims against schema before submitting
+    if (options?.schemaId) {
+      await this._validateClaimsAgainstSchema(options.schemaId, claims);
+    }
+
     const account = await this.server.getAccount(issuerKeypair.publicKey());
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
-    // Signature is over SHA256(issuer + subject + claimsHash) — deterministic canonical encoding
+    // Signature is over SHA256(issuer + subject + claimsHash [+ nonce]) — deterministic canonical encoding
+    // #295: including nonce in the digest makes the ID derivation nonce-dependent on the SDK side
     const signature = signatureHex
       ? Buffer.from(signatureHex, "hex")
       : (() => {
-          // Canonical message: issuer_public_key (utf8) || subject_address (utf8) || claims_hash (32 bytes)
+          // Canonical message: issuer_public_key (utf8) || subject_address (utf8) || claims_hash (32 bytes) [|| nonce (utf8)]
           const issuerBytes = Buffer.from(issuerKeypair.publicKey(), "utf8");
           const subjectBytes = Buffer.from(subjectAddress, "utf8");
           const claimsHashBytes = Buffer.from(claimsHashHex, "hex");
-          const msg = Buffer.concat([issuerBytes, subjectBytes, claimsHashBytes]);
+          const parts: Buffer[] = [issuerBytes, subjectBytes, claimsHashBytes];
+          if (options?.nonce) {
+            parts.push(Buffer.from(options.nonce, "utf8"));
+          }
+          const msg = Buffer.concat(parts);
           const digest = createHash("sha256").update(msg).digest();
           return issuerKeypair.sign(digest);
         })();
@@ -200,17 +216,68 @@ export class CredentialClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
-    await pollTransactionStatus(this.server, result.hash, {
+    const txHash = result.hash;
+    await pollTransactionStatus(this.server, txHash, {
       maxAttempts: this.config.pollingRetries,
       intervalMs: this.config.pollingIntervalMs,
       exponentialBackoff: this.config.pollingExponentialBackoff,
     });
-    const confirmed = await this.server.getTransaction(result.hash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
+    const confirmed = await this.server.getTransaction(txHash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
     // Returns BytesN<32> — encode as hex
     const raw = scValToNative(confirmed.returnValue!) as Uint8Array;
     const credentialId = Buffer.from(raw).toString("hex");
-    return { credentialId, estimatedFee, estimatedFeeXlm };
+    return { data: { credentialId, estimatedFee, estimatedFeeXlm }, txHash };
   }
+
+  /**
+   * Validate `claims` against the schema identified by `schemaId`.
+   * Uses `ajv` for JSON Schema validation. Throws `ClaimsValidationError`
+   * on failure.
+   */
+  private async _validateClaimsAgainstSchema(
+    schemaId: string,
+    claims: Record<string, string>
+  ): Promise<void> {
+    // Lazy-load ajv to avoid bundling it for callers who don't use schemaId
+    let Ajv: typeof import("ajv").default;
+    try {
+      ({ default: Ajv } = await import("ajv"));
+    } catch {
+      throw new SorobanIdentityError(
+        "ClaimsValidationError: ajv is required for schema validation. Install it with: npm install ajv",
+        "INVALID_INPUT"
+      );
+    }
+
+    // Fetch the schema from the on-chain schema registry (or a well-known URL)
+    let schema: Record<string, unknown>;
+    try {
+      const res = await fetch(schemaId);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      schema = (await res.json()) as Record<string, unknown>;
+    } catch (e) {
+      throw new SorobanIdentityError(
+        `ClaimsValidationError: failed to fetch schema ${schemaId}: ${e instanceof Error ? e.message : String(e)}`,
+        "INVALID_INPUT"
+      );
+    }
+
+    const ajv = new Ajv({ allErrors: true });
+    const validate = ajv.compile(schema);
+    const valid = validate(claims);
+    if (!valid) {
+      const fieldErrors: Record<string, string> = {};
+      for (const err of validate.errors ?? []) {
+        const field = err.instancePath?.replace(/^\//, "") || err.params?.missingProperty as string || "root";
+        fieldErrors[field] = err.message ?? "invalid";
+      }
+      throw new ClaimsValidationError(
+        `Claims failed schema validation for schemaId: ${schemaId}`,
+        fieldErrors
+      );
+    }
+  }
+
 
   /**
    * Verify a credential is valid (not revoked, not expired).

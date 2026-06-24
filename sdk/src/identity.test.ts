@@ -127,7 +127,8 @@ describe('IdentityClient', () => {
       service: 'https://example.com',
     });
 
-    expect(result.did).toBe('did:stellar:GABC');
+    expect(result.data.did).toBe('did:stellar:GABC');
+    expect(result.txHash).toBe('abc123');
   });
 
   it('createDid — throws descriptive error when DID already exists', async () => {

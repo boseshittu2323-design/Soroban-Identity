@@ -7,7 +7,7 @@ import {
   scValToNative,
   Account,
 } from "@stellar/stellar-sdk";
-import type { CallOptions, DidDocument, IdentityStorageStats, SorobanIdentityConfig, WriteResult } from "./types";
+import type { CallOptions, DidDocument, IdentityStorageStats, SorobanIdentityConfig, SorobanResponse, WriteResult } from "./types";
 import { validateConfig } from "./types";
 import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
 import { ContractError, SorobanIdentityError } from "./errors";
@@ -107,7 +107,7 @@ export class IdentityClient extends BaseClient {
     keypair: Keypair,
     metadata: Record<string, string> = {},
     options?: CallOptions
-  ): Promise<{ did: string } & WriteResult> {
+  ): Promise<SorobanResponse<{ did: string } & WriteResult>> {
     const account = await this.server.getAccount(keypair.publicKey());
 
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
@@ -136,15 +136,16 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
+    const txHash = result.hash;
     try {
-      await pollTransactionStatus(this.server, result.hash, {
+      await pollTransactionStatus(this.server, txHash, {
         maxAttempts: this.config.pollingRetries,
         intervalMs: this.config.pollingIntervalMs,
         exponentialBackoff: this.config.pollingExponentialBackoff,
       });
-      const confirmed = await this.server.getTransaction(result.hash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
+      const confirmed = await this.server.getTransaction(txHash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
       const did = scValToNative(confirmed.returnValue!) as string;
-      return { did, estimatedFee, estimatedFeeXlm };
+      return { data: { did, estimatedFee, estimatedFeeXlm }, txHash };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("DID already exists")) {
@@ -175,7 +176,7 @@ export class IdentityClient extends BaseClient {
     keypair: Keypair,
     metadata: Record<string, string>,
     options?: CallOptions
-  ): Promise<void> {
+  ): Promise<SorobanResponse<void>> {
     const account = await this.server.getAccount(keypair.publicKey());
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
@@ -201,8 +202,9 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
+    const txHash = result.hash;
     try {
-      await pollTransactionStatus(this.server, result.hash, {
+      await pollTransactionStatus(this.server, txHash, {
         maxAttempts: this.config.pollingRetries,
         intervalMs: this.config.pollingIntervalMs,
         exponentialBackoff: this.config.pollingExponentialBackoff,
@@ -223,6 +225,7 @@ export class IdentityClient extends BaseClient {
       }
       throw e;
     }
+    return { data: undefined, txHash };
   }
 
   /**
@@ -366,7 +369,7 @@ export class IdentityClient extends BaseClient {
    *   exist or is already inactive, or `CONTRACT_ERROR` for other submission
    *   failures.
    */
-  async deactivateDid(keypair: Keypair): Promise<void> {
+  async deactivateDid(keypair: Keypair): Promise<SorobanResponse<void>> {
     const isActive = await this.hasActiveDid(keypair.publicKey());
     if (!isActive) {
       throw new SorobanIdentityError(
@@ -399,11 +402,13 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
-    await pollTransactionStatus(this.server, result.hash, {
+    const txHash = result.hash;
+    await pollTransactionStatus(this.server, txHash, {
       maxAttempts: this.config.pollingRetries,
       intervalMs: this.config.pollingIntervalMs,
       exponentialBackoff: this.config.pollingExponentialBackoff,
     });
+    return { data: undefined, txHash };
   }
 
   /**
