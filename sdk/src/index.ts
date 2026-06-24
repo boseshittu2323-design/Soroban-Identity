@@ -3,6 +3,14 @@ export { healthCheck } from './health';
 export type { HealthCheckResult } from './health';
 export { CredentialClient } from './credentials';
 export { ReputationClient } from './reputation';
+export { PresentationClient } from './presentation';
+export type {
+  VerifiablePresentation,
+  VerifiableCredentialSubset,
+  PresentationProof,
+  PresentationVerifyResult,
+  PresentationVerifyFailReason,
+} from './presentation';
 export { SorobanEventListener, getEvents } from './events';
 export { SorobanTransactionBuilder } from './transaction-builder';
 export { RequestQueue } from './request-queue';
