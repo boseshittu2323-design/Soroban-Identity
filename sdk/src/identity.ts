@@ -9,7 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 import type { CallOptions, DidDocument, IdentityStorageStats, SorobanIdentityConfig, WriteResult } from "./types";
 import { validateConfig } from "./types";
-import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
+import { retryWithBackoff, validateStellarAddress, pollTransactionStatus, runConcurrent } from "./utils";
 import { ContractError, SorobanIdentityError } from "./errors";
 import { IDENTITY_REGISTRY_ERRORS } from "./error-codes";
 import { BaseClient } from "./base-client";
@@ -440,6 +440,30 @@ export class IdentityClient extends BaseClient {
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as IdentityStorageStats;
+  }
+
+  /**
+   * Resolve multiple DID documents in parallel.
+   *
+   * Runs up to `concurrency` (default: `config.maxConcurrentRequests ?? 5`)
+   * simulate calls simultaneously. Results are returned in the same order as
+   * `addresses`.
+   *
+   * @param addresses   Controller addresses to resolve.
+   * @param options     Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link DidDocument} in input order.
+   * @throws {SorobanIdentityError} if any individual resolution fails.
+   */
+  async resolveMany(
+    addresses: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<DidDocument[]> {
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      addresses,
+      (address) => this.resolveDid(address, options),
+      concurrency
+    );
   }
 
   /**

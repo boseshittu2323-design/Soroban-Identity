@@ -21,6 +21,7 @@ import {
   retryWithBackoff,
   validateStellarAddress,
   pollTransactionStatus,
+  runConcurrent,
 } from './utils';
 import { SorobanTransactionBuilder } from './transaction-builder';
 import { ContractError, SorobanIdentityError } from "./errors";
@@ -448,6 +449,34 @@ export class ReputationClient extends BaseClient {
       exponentialBackoff: this.config.pollingExponentialBackoff,
     });
     return { estimatedFee, estimatedFeeXlm };
+  }
+
+  /**
+   * Fetch reputation records for multiple addresses in parallel.
+   *
+   * Useful for leaderboard views that need scores for N subjects without N
+   * sequential round-trips. Runs up to `concurrency`
+   * (default: `config.maxConcurrentRequests ?? 5`) simulate calls at a time.
+   * Results are returned in the same order as `addresses`.
+   *
+   * @param callerAddress Stellar address used to build the read simulations.
+   * @param addresses     Subject addresses to look up.
+   * @param options       Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link ReputationRecord} in input order. Addresses with no
+   *          record return a zero record (`score: 0, reporterCount: 0, updatedAt: 0`).
+   */
+  async getScores(
+    callerAddress: string,
+    addresses: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<ReputationRecord[]> {
+    validateStellarAddress(callerAddress);
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      addresses,
+      (address) => this.getReputation(callerAddress, address, options),
+      concurrency
+    );
   }
 
   /**

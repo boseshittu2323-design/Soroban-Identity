@@ -21,7 +21,7 @@ import type {
   WriteResult,
 } from "./types";
 import { validateConfig } from "./types";
-import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
+import { retryWithBackoff, validateStellarAddress, pollTransactionStatus, runConcurrent } from "./utils";
 import { ContractError, SorobanIdentityError } from "./errors";
 import { CREDENTIAL_MANAGER_ERRORS } from "./error-codes";
 import { BaseClient } from "./base-client";
@@ -562,6 +562,35 @@ export class CredentialClient extends BaseClient {
     validateStellarAddress(callerAddress);
     return Promise.all(
       credentialIds.map((id) => this.verifyCredential(callerAddress, id, options))
+    );
+  }
+
+  /**
+   * Verify multiple credentials in parallel.
+   *
+   * Runs up to `concurrency` (default: `config.maxConcurrentRequests ?? 5`)
+   * simulate calls simultaneously. Results are returned in the same order as
+   * `credentialIds`.
+   *
+   * Prefer this over the older {@link CredentialClient.verifyCredentialsBatch}
+   * when you want an explicit concurrency cap for leaderboard or bulk workflows.
+   *
+   * @param callerAddress  Stellar address used to build the read simulations.
+   * @param credentialIds  Hex-encoded credential IDs (32 bytes each).
+   * @param options        Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link VerifyResult} in input order.
+   */
+  async verifyMany(
+    callerAddress: string,
+    credentialIds: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<VerifyResult[]> {
+    validateStellarAddress(callerAddress);
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      credentialIds,
+      (id) => this.verifyCredential(callerAddress, id, options),
+      concurrency
     );
   }
 

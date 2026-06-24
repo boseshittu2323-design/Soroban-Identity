@@ -11,6 +11,7 @@ export {
   checkConnection,
   validateStellarAddress,
   computeCredentialId,
+  runConcurrent,
 } from './utils';
 export {
   ContractError,
