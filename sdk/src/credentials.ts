@@ -100,6 +100,83 @@ export class CredentialClient extends BaseClient {
   }
 
   /**
+   * Parameters accepted by {@link CredentialClient.issueCredential} and
+   * {@link CredentialClient.estimateIssuanceFee}.
+   */
+  // Defined here (not in types.ts) to keep the Keypair import local to this file.
+  // Re-exported via index.ts as `IssueCredentialParams`.
+
+  /**
+   * Estimate the XLM fee for issuing a credential without signing or submitting.
+   *
+   * Runs the Soroban simulation step only — identical to the first half of
+   * {@link CredentialClient.issueCredential} — and returns the resource fee
+   * straight from the simulation response. No transaction is signed or broadcast.
+   *
+   * Useful for showing fee previews in UIs before asking users to approve a
+   * transaction.
+   *
+   * @param issuerKeypair   The registered issuer keypair (public key used for args).
+   * @param subjectAddress  The Stellar address that would receive the credential.
+   * @param credentialType  Credential category — see {@link CredentialType}.
+   * @param claims          Arbitrary `string → string` claims to embed.
+   * @param claimsHashHex   64-char hex (32 bytes) SHA-256 of the off-chain claims.
+   * @param expiresAt       Unix timestamp (seconds) or `0` for no expiry.
+   * @param options         Per-call overrides (currently `timeoutSeconds`).
+   * @returns `{ fee: string, feeXLM: string }` where `fee` is stroops and
+   *          `feeXLM` is the human-readable XLM amount.
+   * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` if
+   *   `claimsHashHex` is malformed, or `CONTRACT_ERROR` if simulation fails.
+   */
+  async estimateIssuanceFee(
+    issuerKeypair: Keypair,
+    subjectAddress: string,
+    credentialType: CredentialType,
+    claims: Record<string, string>,
+    claimsHashHex: string,
+    expiresAt = 0,
+    options?: CallOptions
+  ): Promise<{ fee: string; feeXLM: string }> {
+    if (!/^[0-9a-fA-F]{64}$/.test(claimsHashHex)) {
+      throw new SorobanIdentityError(
+        "InvalidClaimsHashFormat: claimsHash must be a 64-character hex string (32 bytes)",
+        "VALIDATION_ERROR"
+      );
+    }
+
+    const account = await this.server.getAccount(issuerKeypair.publicKey());
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    // Use a dummy 64-byte signature — simulation does not validate auth signatures.
+    const dummySignature = Buffer.alloc(64);
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          "issue_credential",
+          ...buildIssueCredentialArgs({
+            issuer: issuerKeypair.publicKey(),
+            subject: subjectAddress,
+            credentialType,
+            claims,
+            claimsHash: Buffer.from(claimsHashHex, "hex"),
+            signature: dummySignature,
+            expiresAt,
+          })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
+    const feeStroops = prepared.fee;
+    const feeXLM = (parseInt(feeStroops, 10) / 10_000_000).toFixed(7);
+    return { fee: feeStroops, feeXLM };
+  }
+
+  /**
    * Issue a credential to a subject. Caller must be a registered issuer.
    *
    * Builds, signs, and submits an `issue_credential` call to the
