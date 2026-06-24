@@ -55,6 +55,7 @@ export {
 } from './contract-args';
 export type {
   DidDocument,
+  ServiceEndpoint,
   Credential,
   CredentialType,
   CredentialListOptions,
