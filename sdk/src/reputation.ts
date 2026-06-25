@@ -1,4 +1,5 @@
 import {
+  Account,
   Contract,
   SorobanRpc,
   TransactionBuilder,
@@ -15,15 +16,26 @@ import type {
   SorobanIdentityConfig,
   WriteResult,
 } from './types';
+import { validateConfig } from './types';
 import {
   retryWithBackoff,
   validateStellarAddress,
   pollTransactionStatus,
+  runConcurrent,
 } from './utils';
 import { SorobanTransactionBuilder } from './transaction-builder';
 import { ContractError, SorobanIdentityError } from "./errors";
 import { REPUTATION_ERRORS } from './error-codes';
 import { BaseClient } from './base-client';
+import {
+  buildGetReputationArgs,
+  buildGetHistoryArgs,
+  buildPassesSybilCheckDefaultArgs,
+  buildPassesSybilCheckArgs,
+  buildSubmitScoreArgs,
+  buildListReportersArgs,
+  buildListHistoryArgs,
+} from './contract-args';
 
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 
@@ -58,14 +70,9 @@ export interface ScoreHistoryEntry {
  */
 export class ReputationClient extends BaseClient {
   /**
-   * @param config SDK config; `reputationId` MUST be set or the constructor throws.
-   * @throws {SorobanIdentityError} with code `VALIDATION_ERROR` when
-   *   `config.reputationId` is missing.
+   * @param config SDK config including the deployed reputation contract ID.
    */
   constructor(config: SorobanIdentityConfig) {
-    if (!config.reputationId) {
-      throw new SorobanIdentityError('reputationId is required for ReputationClient', 'VALIDATION_ERROR');
-    }
     super(config, config.reputationId);
   }
 
@@ -81,7 +88,7 @@ export class ReputationClient extends BaseClient {
           .addOperation(
             this.contract.call(
               'passes_sybil_check_default',
-              nativeToScVal(PROBE_ADDRESS, { type: 'address' })
+              ...buildPassesSybilCheckDefaultArgs({ subject: PROBE_ADDRESS })
             )
           )
           .setTimeout(10)
@@ -182,7 +189,7 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'get_reputation',
-          nativeToScVal(subjectAddress, { type: 'address' })
+          ...buildGetReputationArgs({ subject: subjectAddress })
         )
       )
       .setTimeout(timeout)
@@ -256,10 +263,12 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'get_history',
-          nativeToScVal(subjectAddress, { type: 'address' }),
-          nativeToScVal(reporterAddress, { type: 'address' }),
-          nativeToScVal(offset, { type: 'u32' }),
-          nativeToScVal(limit, { type: 'u32' })
+          ...buildGetHistoryArgs({
+            subject: subjectAddress,
+            reporter: reporterAddress,
+            offset,
+            limit,
+          })
         )
       )
       .setTimeout(timeout)
@@ -310,7 +319,7 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'passes_sybil_check_default',
-          nativeToScVal(subjectAddress, { type: 'address' })
+          ...buildPassesSybilCheckDefaultArgs({ subject: subjectAddress })
         )
       )
       .setTimeout(timeout)
@@ -361,9 +370,7 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'passes_sybil_check',
-          nativeToScVal(subjectAddress, { type: 'address' }),
-          nativeToScVal(minScore, { type: 'i64' }),
-          nativeToScVal(minReporters, { type: 'u32' })
+          ...buildPassesSybilCheckArgs({ subject: subjectAddress, minScore, minReporters })
         )
       )
       .setTimeout(timeout)
@@ -409,12 +416,14 @@ export class ReputationClient extends BaseClient {
     // Use the transaction builder for construction
     const builder = new SorobanTransactionBuilder(account, this.config);
     builder.addContractCall(
-      this.config.reputationId!,
+      this.config.reputationId,
       'submit_score',
-      nativeToScVal(reporterKeypair.publicKey(), { type: 'address' }),
-      nativeToScVal(subjectAddress, { type: 'address' }),
-      nativeToScVal(delta, { type: 'i64' }),
-      nativeToScVal(reason, { type: 'string' })
+      ...buildSubmitScoreArgs({
+        reporter: reporterKeypair.publicKey(),
+        subject: subjectAddress,
+        delta,
+        reason,
+      })
     );
 
     const tx = builder.build(timeout);
@@ -440,6 +449,34 @@ export class ReputationClient extends BaseClient {
       exponentialBackoff: this.config.pollingExponentialBackoff,
     });
     return { estimatedFee, estimatedFeeXlm };
+  }
+
+  /**
+   * Fetch reputation records for multiple addresses in parallel.
+   *
+   * Useful for leaderboard views that need scores for N subjects without N
+   * sequential round-trips. Runs up to `concurrency`
+   * (default: `config.maxConcurrentRequests ?? 5`) simulate calls at a time.
+   * Results are returned in the same order as `addresses`.
+   *
+   * @param callerAddress Stellar address used to build the read simulations.
+   * @param addresses     Subject addresses to look up.
+   * @param options       Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link ReputationRecord} in input order. Addresses with no
+   *          record return a zero record (`score: 0, reporterCount: 0, updatedAt: 0`).
+   */
+  async getScores(
+    callerAddress: string,
+    addresses: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<ReputationRecord[]> {
+    validateStellarAddress(callerAddress);
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      addresses,
+      (address) => this.getReputation(callerAddress, address, options),
+      concurrency
+    );
   }
 
   /**
@@ -526,8 +563,7 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'list_reporters',
-          cursorArg,
-          nativeToScVal(options?.limit ?? 0, { type: 'u32' })
+          ...buildListReportersArgs({ cursor: cursorArg, limit: options?.limit ?? 0 })
         )
       )
       .setTimeout(timeout)
@@ -561,6 +597,29 @@ export class ReputationClient extends BaseClient {
    * @throws {SorobanIdentityError} on simulation failure (network or contract error,
    *         including `ReporterNotFound` when the reporter is not registered).
    */
+  /**
+   * Get the current numeric score for a subject.
+   *
+   * Convenience wrapper around {@link ReputationClient.getReputation} that
+   * returns only the score field. Use this when you only need the number and
+   * don't want to carry the full record.
+   *
+   * @param callerAddress  Stellar address used to build the read simulation.
+   * @param subjectAddress The subject whose score to retrieve.
+   * @param options        Per-call overrides (currently `timeoutSeconds`).
+   * @returns The subject's current accumulated score (0 when no record exists).
+   * @throws {SorobanIdentityError} on simulation failure unrelated to a
+   *   missing record.
+   */
+  async getScore(
+    callerAddress: string,
+    subjectAddress: string,
+    options?: CallOptions
+  ): Promise<number> {
+    const record = await this.getReputation(callerAddress, subjectAddress, options);
+    return record.score;
+  }
+
   async listScoreHistory(
     callerAddress: string,
     subjectAddress: string,
@@ -585,10 +644,12 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'list_history',
-          nativeToScVal(subjectAddress, { type: 'address' }),
-          nativeToScVal(reporterAddress, { type: 'address' }),
-          cursorArg,
-          nativeToScVal(options?.limit ?? 0, { type: 'u32' })
+          ...buildListHistoryArgs({
+            subject: subjectAddress,
+            reporter: reporterAddress,
+            cursor: cursorArg,
+            limit: options?.limit ?? 0,
+          })
         )
       )
       .setTimeout(timeout)
@@ -607,5 +668,38 @@ export class ReputationClient extends BaseClient {
     ) as { items: ScoreHistoryEntry[]; next_cursor: number | null };
 
     return { items: raw.items, nextCursor: raw.next_cursor ?? null };
+  }
+
+  /**
+   * Liveness probe — calls the on-chain `ping()` function.
+   *
+   * Returns the contract's `CONTRACT_VERSION` constant. Throws if the contract
+   * is not deployed or not responding.
+   *
+   * @param options Per-call overrides (currently `timeoutSeconds`).
+   * @returns The contract version number (currently `1`).
+   * @throws {SorobanIdentityError} with code `CONTRACT_ERROR` if the contract
+   *   does not respond.
+   */
+  async ping(options?: CallOptions): Promise<number> {
+    const account = new Account(PROBE_ADDRESS, "0");
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(this.contract.call("ping"))
+      .setTimeout(timeout)
+      .build();
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      throw new SorobanIdentityError(
+        "Health check failed: reputation contract not responding",
+        "CONTRACT_ERROR"
+      );
+    }
+    return scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as number;
   }
 }

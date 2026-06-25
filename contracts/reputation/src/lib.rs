@@ -21,6 +21,9 @@ const REPORTER: Symbol = symbol_short!("REPORTER");
 const DEF_THRESH: Symbol = symbol_short!("DEFTHRESH");
 const SUBJECT_CNT: Symbol = symbol_short!("SUBCNT");
 const SCORE_CNT: Symbol = symbol_short!("SCRCNT");
+const RECORD: Symbol = symbol_short!("rec");
+const HISTORY: Symbol = symbol_short!("h");
+const RATE_LIMIT: Symbol = symbol_short!("rl");
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -126,6 +129,8 @@ impl Reputation {
     /// Must be called once before any other function. Subsequent calls will
     /// return [`ContractError::AlreadyInitialized`].
     ///
+    /// Follows the canonical pattern documented in `contracts/README.md`.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `admin` - The address that will have admin privileges over this contract.
@@ -134,10 +139,9 @@ impl Reputation {
     /// Returns [`ContractError::AlreadyInitialized`] if the contract has already
     /// been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        if env.storage().instance().has(&ADMIN) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&ADMIN, &admin);
+        Self::require_uninitialized(&env)?;
+        Self::set_admin(&env, &admin);
+        env.events().publish((ADMIN, symbol_short!("init")), admin);
         Ok(())
     }
 
@@ -677,6 +681,19 @@ impl Reputation {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// Canonical init guard — see `contracts/README.md`.
+    fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
+        if env.storage().instance().has(&ADMIN) {
+            return Err(ContractError::AlreadyInitialized);
+        }
+        Ok(())
+    }
+
+    /// Canonical admin persistence — see `contracts/README.md`.
+    fn set_admin(env: &Env, admin: &Address) {
+        env.storage().instance().set(&ADMIN, admin);
+    }
+
     fn require_admin(env: &Env) -> Result<(), ContractError> {
         let admin: Address = env
             .storage()
@@ -702,15 +719,15 @@ impl Reputation {
     }
 
     fn record_key(subject: &Address) -> (Symbol, Address) {
-        (symbol_short!("rec"), subject.clone())
+        (RECORD, subject.clone())
     }
 
     fn history_key(subject: &Address, reporter: &Address) -> (Symbol, Address, Address) {
-        (symbol_short!("h"), subject.clone(), reporter.clone())
+        (HISTORY, subject.clone(), reporter.clone())
     }
 
     fn rate_key(subject: &Address, reporter: &Address) -> (Symbol, Address, Address) {
-        (symbol_short!("rl"), subject.clone(), reporter.clone())
+        (RATE_LIMIT, subject.clone(), reporter.clone())
     }
 }
 
@@ -723,6 +740,41 @@ mod tests {
         testutils::{Address as _, Ledger as _},
         Env, String,
     };
+
+    #[test]
+    fn test_ping_returns_version() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+        assert_eq!(client.ping(), CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn test_upgrade_unauthorized_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        client.initialize(&admin);
+
+        let result = client.try_upgrade(&attacker, &BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_upgrade_not_initialized_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let result = client.try_upgrade(&admin, &BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
 
     #[test]
     fn test_double_initialize_returns_error() {
@@ -913,7 +965,7 @@ mod tests {
         client.add_reporter(&reporter);
 
         let reason = String::from_str(&env, "penalty");
-        client.submit_score(&reporter, &subject, &-9_999_999, &reason);
+        client.submit_score(&reporter, &subject, &-100, &reason);
 
         let rec = client.get_reputation(&subject);
         assert_eq!(rec.score, 0);
@@ -1184,5 +1236,25 @@ mod tests {
 
         let result = client.try_list_history(&subject, &unknown, &None, &10);
         assert_eq!(result, Err(Ok(ContractError::ReporterNotFound)));
+    }
+
+    /// Storage namespace symbols must be pairwise distinct.
+    #[test]
+    fn test_storage_key_symbols_are_unique() {
+        let keys = [
+            ADMIN,
+            REPORTER,
+            DEF_THRESH,
+            SUBJECT_CNT,
+            SCORE_CNT,
+            RECORD,
+            HISTORY,
+            RATE_LIMIT,
+        ];
+        for (i, left) in keys.iter().enumerate() {
+            for right in keys.iter().skip(i + 1) {
+                assert_ne!(left, right);
+            }
+        }
     }
 }

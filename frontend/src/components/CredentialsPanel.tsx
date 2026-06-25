@@ -5,7 +5,9 @@ import { CredentialClient } from '../../../sdk/src';
 import { validateStellarAddress } from "../../../sdk/src/utils";
 import { getNetworkConfig } from '../network';
 import SkeletonCard from "./SkeletonCard";
+import FormField from "./FormField";
 import { formatTimestamp } from "../utils/formatDate";
+import { handleError } from "../utils/handleError";
 import { useWalletContext } from "../context/WalletContext";
 
 type VerifyState =
@@ -98,15 +100,7 @@ function getStatusSortRank(credential: Credential): number {
   return 2;
 }
 
-// Mock credentials for demonstration — replace with SDK data when wired
-const MOCK_CREDENTIALS: Credential[] = [
-  { id: "abc001", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { name: "John Doe", country: "US" }, claimsHash: "hash1", signature: "sig1", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: 0, revoked: false },
-  { id: "abc002", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { verified: "true" }, claimsHash: "hash2", signature: "sig2", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 12 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
-  { id: "abc003", credentialType: "Reputation", subject: "GABC…", issuer: "GISSUER", claims: { score: "850", level: "gold" }, claimsHash: "hash3", signature: "sig3", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
-  { id: "abc004", credentialType: "Achievement", subject: "GABC…", issuer: "GISSUER", claims: {}, claimsHash: "hash4", signature: "sig4", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() - 5 * 24 * 60 * 60 * 1000) / 1000), revoked: false },
-  { id: "abc005", credentialType: "Custom", subject: "GABC…", issuer: "GISSUER", claims: { custom_field: "custom_value" }, claimsHash: "hash5", signature: "sig5", issuedAt: Math.floor(Date.now() / 1000) - 1000, expiresAt: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000), revoked: true },
-  { id: "abc006", credentialType: "Kyc", subject: "GABC…", issuer: "GISSUER", claims: { reason: "compromised" }, claimsHash: "hash6", signature: "sig6", issuedAt: Math.floor(Date.now() / 1000) - 2000, expiresAt: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000), revoked: true },
-];
+// TODO: integrate SDK — replace with CredentialClient.getCredentialsBySubject() (see issue #226)
 
 const FILTER_OPTIONS: FilterType[] = ["All", "Kyc", "Reputation", "Achievement", "Custom"];
 
@@ -169,15 +163,16 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
 
   const [searchAddress, setSearchAddress] = useState("");
 
-  const handleVerify = async () => {
-    if (!credId.trim()) return;
+  const handleVerify = async (credentialId?: string) => {
+    const id = (credentialId ?? credId).trim();
+    if (!id) return;
     setVerifying(true);
     setVerifyState("idle");
     try {
       const networkConfig = getNetworkConfig();
       const credentialClient = new CredentialClient(networkConfig);
       const caller = wallet.publicKey || "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
-      const result = await credentialClient.verifyCredential(caller, credId.trim());
+      const result = await credentialClient.verifyCredential(caller, id);
       setVerifyState(result.valid ? "valid" : result.reason || "invalid");
     } catch {
       setVerifyState("invalid");
@@ -196,11 +191,11 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     const checkIssuerStatus = async () => {
       setCheckingIssuer(true);
       try {
-        // TODO: wire CredentialClient.isIssuer() from SDK
-        // For now, mock the check
-        await new Promise((r) => setTimeout(r, 300));
-        // Mock: assume addresses starting with specific pattern are issuers
-        setIsIssuer(wallet.publicKey?.startsWith("G") ?? false);
+        const networkConfig = getNetworkConfig();
+        const credentialClient = new CredentialClient(networkConfig);
+        const caller = wallet.publicKey || "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+        const issuer = await credentialClient.isIssuer(caller, wallet.publicKey!);
+        setIsIssuer(issuer);
       } catch {
         setIsIssuer(false);
       } finally {
@@ -213,13 +208,9 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
 
   // Handle deep link verification
   useEffect(() => {
-    if (verifyId) {
-      setCredId(verifyId);
-      // Trigger verification after a short delay to ensure state is set
-      setTimeout(() => {
-        handleVerify();
-      }, 100);
-    }
+    if (!verifyId) return;
+    setCredId(verifyId);
+    void handleVerify(verifyId);
   }, [verifyId]);
 
   const handleSearch = async () => {
@@ -243,7 +234,7 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
       const results = await credentialClient.getCredentialsBySubject(caller, addr);
       dispatchCredential({ type: 'FETCH_SUCCESS', credentials: results, searchedAddress: addr });
     } catch (e: unknown) {
-      dispatchCredential({ type: 'FETCH_ERROR', message: e instanceof Error ? e.message : String(e) });
+      dispatchCredential({ type: 'FETCH_ERROR', message: handleError(e) });
     }
   };
 
@@ -292,7 +283,7 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
     setClaims(updated);
   };
 
-  const displayCredentials = fetchedCredentials ?? MOCK_CREDENTIALS;
+  const displayCredentials = fetchedCredentials ?? [];
 
   const filteredCredentials =
     activeFilter === "All"
@@ -359,11 +350,11 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
       if (txStatus.status === "FAILED") throw new Error("Transaction failed on-chain");
       
       const raw = scValToNative((txStatus as any).returnValue) as Uint8Array;
-      const mockId = Buffer.from(raw).toString("hex");
+      const credentialId = Buffer.from(raw).toString("hex");
       
-      setIssueResult(`Credential issued successfully!\nID: ${mockId}\nEstimated fee: ${(estimatedFee / 10_000_000).toFixed(7)} XLM`);
+      setIssueResult(`Credential issued successfully!\nID: ${credentialId}\nEstimated fee: ${(estimatedFee / 10_000_000).toFixed(7)} XLM`);
     } catch (e: unknown) {
-      setIssueResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setIssueResult(`Error: ${handleError(e)}`);
     } finally {
       setIssuing(false);
     }
@@ -553,7 +544,7 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
           value={credId}
           onChange={(e) => setCredId(e.target.value)}
         />
-        <button onClick={handleVerify} disabled={verifying || !credId}>
+        <button onClick={() => void handleVerify()} disabled={verifying || !credId}>
           {verifying ? "Verifying…" : "Verify"}
         </button>
         {verifying && <SkeletonCard rows={2} />}
@@ -590,24 +581,14 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
                 </span>
               </p>
               
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.85rem", fontWeight: 600 }}>
-                  Subject Address
-                </label>
-                <input
-                  placeholder="Subject address (G…)"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  style={{
-                    borderColor: issueErrors.subject ? "var(--error)" : undefined,
-                  }}
-                />
-                {issueErrors.subject && (
-                  <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.25rem" }}>
-                    {issueErrors.subject}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Subject Address"
+                placeholder="Subject address (G…)"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                error={issueErrors.subject}
+                style={{ marginBottom: "1rem" }}
+              />
 
               <div style={{ marginBottom: "1rem" }}>
                 <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.85rem", fontWeight: 600 }}>
@@ -666,25 +647,15 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
                 )}
               </div>
 
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.85rem", fontWeight: 600 }}>
-                  Expires At (Unix timestamp, 0 for no expiry)
-                </label>
-                <input
-                  type="number"
-                  placeholder="0"
-                  value={expiresAt}
-                  onChange={(e) => setExpiresAt(e.target.value)}
-                  style={{
-                    borderColor: issueErrors.expiresAt ? "var(--error)" : undefined,
-                  }}
-                />
-                {issueErrors.expiresAt && (
-                  <p style={{ color: "var(--error)", fontSize: "0.75rem", marginTop: "0.25rem" }}>
-                    {issueErrors.expiresAt}
-                  </p>
-                )}
-              </div>
+              <FormField
+                label="Expires At (Unix timestamp, 0 for no expiry)"
+                type="number"
+                placeholder="0"
+                value={expiresAt}
+                onChange={(e) => setExpiresAt(e.target.value)}
+                error={issueErrors.expiresAt}
+                style={{ marginBottom: "1rem" }}
+              />
 
               <button onClick={handleIssue} disabled={issuing || Object.keys(issueErrors).length > 0}>
                 {issuing ? "Issuing…" : "Issue KYC Credential"}

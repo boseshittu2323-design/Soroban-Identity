@@ -35,6 +35,7 @@ vi.mock('@stellar/stellar-sdk', () => ({
     build: vi.fn().mockReturnValue({ sign: vi.fn() }),
   })),
   BASE_FEE: '100',
+  Account: vi.fn().mockImplementation((id: string) => ({ id, sequence: '0' })),
   Keypair: {
     fromSecret: vi.fn().mockReturnValue({
       publicKey: () => 'GABC',
@@ -45,15 +46,17 @@ vi.mock('@stellar/stellar-sdk', () => ({
   StrKey: {
     isValidEd25519PublicKey: (addr: string) =>
       typeof addr === 'string' && addr.startsWith('G'),
+    isValidContract: (id: string) =>
+      typeof id === 'string' && id.startsWith('C') && id.length === 56,
   },
 }));
 
 const config: SorobanIdentityConfig = {
   rpcUrl: 'https://soroban-testnet.stellar.org',
   networkPassphrase: 'Test SDF Network ; September 2015',
-  identityRegistryId: 'CONTRACT_A',
-  credentialManagerId: 'CONTRACT_B',
-  reputationId: 'CONTRACT_C',
+  identityRegistryId: 'CBBNTYLY7WH6O3IGUI6BKUYLB5UQOOCNDYW5EL7BY4DJKPZ7SGIRWCSL',
+  credentialManagerId: 'CD5MO3M3LYM5JLYXD27ARVECRKQXLJJSNBWMAUJ6ST3F4FXBGGXTJA7T',
+  reputationId: 'CBXM5TFFI4DWZ2OQSR37KHVO6OEKTJQTGOQMFTIDFTFUP32COAGW4OPK',
 };
 
 describe('IdentityClient', () => {

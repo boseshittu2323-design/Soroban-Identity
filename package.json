@@ -1,0 +1,8 @@
+{
+  "name": "soroban-identity-monorepo",
+  "private": true,
+  "workspaces": [
+    "sdk",
+    "frontend"
+  ]
+}

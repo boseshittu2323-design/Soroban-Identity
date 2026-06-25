@@ -1,21 +1,33 @@
 import { SorobanRpc, Contract, xdr, scValToNative } from '@stellar/stellar-sdk';
 
+/** Filter applied to an event subscription or one-shot query. */
 export interface EventFilter {
+  /** Topic filter — single topic array or matrix of OR-able topics. */
   topic?: string[] | string[][];
+  /** Restrict results to events from this contract ID. */
   contractId?: string;
 }
 
+/** Decoded Soroban contract event returned by {@link getEvents} or the listener callback. */
 export interface ContractEvent {
   type: string;
+  /** Stellar contract ID that emitted this event. */
   contractId: string;
+  /** JSON-serialised topic values. */
   topic: string[];
+  /** Decoded event payload. */
   value: Record<string, unknown>;
+  /** Ledger sequence number the event was emitted in. */
   ledger: number;
+  /** Transaction hash of the transaction that produced this event. */
   txHash: string;
 }
 
+/** Options for a one-shot historical event query via {@link getEvents}. */
 export interface GetEventsOptions {
+  /** Soroban RPC URL to query. */
   rpcUrl: string;
+  /** Contract whose events to fetch. */
   contractId: string;
   /** Ledger to start scanning from. Omit to start from the oldest available. */
   startLedger?: number;
@@ -25,14 +37,19 @@ export interface GetEventsOptions {
 }
 
 /**
- * One-shot fetch of historical contract events via the Soroban RPC getEvents
- * endpoint. For real-time updates use SorobanEventListener instead.
+ * One-shot fetch of historical contract events via the Soroban RPC `getEvents`
+ * endpoint.
  *
- * Event indexing strategy:
- *   - For lightweight queries: call this utility with a known startLedger.
- *   - For production indexing: consider the Mercury indexer for Soroban
- *     (https://mercurydata.app) or run a custom listener that checkpoints
- *     the last processed ledger and pages forward on each invocation.
+ * For real-time updates use {@link SorobanEventListener} instead.
+ *
+ * **Indexing strategy:** For lightweight queries, call this utility with a
+ * known `startLedger`. For production indexing, consider checkpointing the
+ * last processed ledger and paging forward on each invocation.
+ *
+ * @param options Query parameters — RPC URL, contract, ledger range, and filter.
+ * @returns Array of decoded {@link ContractEvent} records. Empty when no events
+ *   match.
+ * @throws If the RPC request fails.
  */
 export async function getEvents(options: GetEventsOptions): Promise<ContractEvent[]> {
   const { rpcUrl, contractId, startLedger, limit = 100, filter } = options;
@@ -83,152 +100,23 @@ function parseRawEvent(event: SorobanRpc.Api.EventResponse): ContractEvent | nul
   }
 }
 
-export interface TypedEventFilter {
-  /** Contract address to filter by. */
-  contractId: string;
-  /** Event name (first topic symbol) to match. */
-  eventName: string;
-  /** Optional additional topic filters. */
-  topics?: string[][];
-}
-
-export interface EventsClientOptions {
-  rpcUrl: string;
-  /** Initial ledger to scan from. Defaults to earliest available. */
-  startLedger?: number;
-  /** Max events per page. Defaults to 100. */
-  pageSize?: number;
-  /** Base backoff delay in milliseconds. Defaults to 1000. */
-  baseBackoffMs?: number;
-  /** Maximum backoff delay in milliseconds. Defaults to 30000. */
-  maxBackoffMs?: number;
-}
-
 /**
- * Typed event client that wraps `getEvents` with:
- * - Filter by contract ID and event name (first topic symbol)
- * - Automatic cursor tracking across calls
- * - Exponential backoff on RPC failures
- * - Async iterator interface for consuming events in order
+ * Long-running, polling-based listener for real-time Soroban contract events.
+ *
+ * Polls the RPC `getEvents` endpoint at a configurable interval and delivers
+ * new events to a callback. Tracks the last seen ledger so each poll returns
+ * only fresh events.
  *
  * @example
  * ```ts
- * const client = new EventsClient({ rpcUrl: 'https://soroban-testnet.stellar.org' });
- * const filter: TypedEventFilter = { contractId: '...', eventName: 'payment' };
- *
- * for await (const event of client.subscribe(filter)) {
- *   console.log(event.contractId, event.value);
- * }
+ * const listener = new SorobanEventListener(rpcUrl, contractId, {
+ *   topic: ['credential', 'issued'],
+ * });
+ * listener.start((events) => console.log(events));
+ * // later...
+ * listener.stop();
  * ```
  */
-export class EventsClient {
-  private server: SorobanRpc.Server;
-  private options: Required<Omit<EventsClientOptions, 'startLedger'>> & { startLedger?: number };
-  private cursor: number | undefined;
-
-  constructor(options: EventsClientOptions) {
-    this.server = new SorobanRpc.Server(options.rpcUrl);
-    this.options = {
-      rpcUrl: options.rpcUrl,
-      startLedger: options.startLedger,
-      pageSize: options.pageSize ?? 100,
-      baseBackoffMs: options.baseBackoffMs ?? 1000,
-      maxBackoffMs: options.maxBackoffMs ?? 30_000,
-    };
-    this.cursor = options.startLedger;
-  }
-
-  /**
-   * Fetch the next page of events matching `filter`.
-   *
-   * Advances the internal cursor so subsequent calls page forward without
-   * re-reading already-seen events.
-   *
-   * @param filter Contract and event-name filter.
-   * @returns Array of matching contract events, possibly empty.
-   */
-  async fetchNext(filter: TypedEventFilter): Promise<ContractEvent[]> {
-    const topics = buildTopicsFilterForName(filter.eventName, filter.topics);
-    const response = await this.withBackoff(() =>
-      this.server.getEvents({
-        startLedger: this.cursor,
-        filters: [
-          { type: 'contract', contractIds: [filter.contractId], topics },
-        ],
-        limit: this.options.pageSize,
-      })
-    );
-
-    const events = (response.events ?? [])
-      .map(parseRawEvent)
-      .filter((e): e is ContractEvent => e !== null);
-
-    if (events.length > 0) {
-      this.cursor = Math.max(...events.map((e) => e.ledger)) + 1;
-    }
-
-    return events;
-  }
-
-  /**
-   * Async iterator that continuously polls for new events.
-   *
-   * Yields each event individually. Pauses between polls when there are no
-   * new events (using exponential backoff on repeated empty responses).
-   *
-   * @param filter Contract and event-name filter.
-   * @param pollIntervalMs Milliseconds to wait between polls when idle.
-   */
-  async *subscribe(
-    filter: TypedEventFilter,
-    pollIntervalMs = 5000
-  ): AsyncGenerator<ContractEvent> {
-    let idleMs = pollIntervalMs;
-    while (true) {
-      const events = await this.fetchNext(filter).catch(() => [] as ContractEvent[]);
-      if (events.length > 0) {
-        idleMs = pollIntervalMs;
-        for (const event of events) {
-          yield event;
-        }
-      } else {
-        await sleep(idleMs);
-        idleMs = Math.min(idleMs * 1.5, this.options.maxBackoffMs);
-      }
-    }
-  }
-
-  /** Reset the cursor to re-scan from `ledger` (or the beginning if omitted). */
-  resetCursor(ledger?: number): void {
-    this.cursor = ledger;
-  }
-
-  private async withBackoff<T>(fn: () => Promise<T>): Promise<T> {
-    let delay = this.options.baseBackoffMs;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await fn();
-      } catch (err) {
-        if (attempt >= 4) throw err;
-        await sleep(delay);
-        delay = Math.min(delay * 2, this.options.maxBackoffMs);
-      }
-    }
-  }
-}
-
-function buildTopicsFilterForName(
-  eventName: string,
-  extra?: string[][]
-): string[][] {
-  const nameTopic = [eventName];
-  return extra ? [nameTopic, ...extra] : [nameTopic];
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class SorobanEventListener {
   private server: SorobanRpc.Server;
   private contractId: string;
@@ -237,6 +125,11 @@ export class SorobanEventListener {
   private intervalId?: ReturnType<typeof setInterval>;
   private lastLedger = 0;
 
+  /**
+   * @param rpcUrl     Soroban RPC endpoint URL.
+   * @param contractId Contract whose events to subscribe to.
+   * @param filter     Optional topic / contract-ID filter applied to each poll.
+   */
   constructor(rpcUrl: string, contractId: string, filter?: EventFilter) {
     this.server = new SorobanRpc.Server(rpcUrl);
     this.contractId = contractId;

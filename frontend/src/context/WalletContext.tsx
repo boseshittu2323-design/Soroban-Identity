@@ -1,25 +1,28 @@
-import { createContext, useContext, ReactNode } from "react";
-import { WalletState } from "../hooks/useWallet";
+import { createContext, useContext, type ReactNode } from "react";
+import { useWallet } from "../hooks/useWallet";
+import type { WalletState } from "../hooks/useWalletState";
+import type { FrontendNetworkConfig } from "../network";
+import { getNetworkConfig } from "../network";
 
-interface WalletContextProps {
-  wallet: WalletState & {
-    connect: (walletType?: string) => void;
-    disconnect: () => void;
-    signTransaction: (xdr: string) => Promise<string>;
-  };
+interface WalletContextValue extends WalletState {
+  connect: (walletType?: string) => void;
+  disconnect: () => void;
+  signTransaction: (xdr: string) => Promise<string>;
 }
 
-const WalletContext = createContext<WalletContextProps | null>(null);
+const WalletContext = createContext<WalletContextValue | null>(null);
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  // Importing here to avoid circular dependency issues
-  const { useWallet } = require("../hooks/useWallet");
-  const wallet = useWallet();
-  return <WalletContext.Provider value={wallet}>{children}</WalletContext.Provider>;
+  const networkConfig: FrontendNetworkConfig = getNetworkConfig();
+  const wallet = useWallet(networkConfig);
+  return (
+    <WalletContext.Provider value={wallet}>{children}</WalletContext.Provider>
+  );
 }
 
-export function useWalletContext() {
+export function useWalletContext(): WalletContextValue {
   const ctx = useContext(WalletContext);
-  if (!ctx) throw new Error("useWalletContext must be used inside WalletProvider");
+  if (!ctx)
+    throw new Error("useWalletContext must be used inside WalletProvider");
   return ctx;
 }

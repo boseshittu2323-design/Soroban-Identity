@@ -1,3 +1,23 @@
+import { StrKey } from "@stellar/stellar-sdk";
+
+/**
+ * W3C DID Core service endpoint embedded in a {@link DidDocument}.
+ *
+ * Mirrors the Rust `ServiceEndpoint` contracttype from the identity-registry.
+ * Note: the Soroban field is named `type_` (reserved keyword in Rust); this
+ * interface follows the same serialisation name.
+ *
+ * @see https://www.w3.org/TR/did-core/#services
+ */
+export interface ServiceEndpoint {
+  /** URI identifying this endpoint (e.g. `did:stellar:…#messaging`). */
+  id: string;
+  /** Service type (e.g. `DIDCommMessaging`, `CredentialService`). */
+  type_: string;
+  /** URL or URI where the service can be reached. */
+  service_endpoint: string;
+}
+
 /**
  * Decentralised identifier document as stored by the identity-registry contract.
  *
@@ -18,6 +38,11 @@ export interface DidDocument {
   updatedAt: number;
   /** `false` once `deactivateDid` has been called for this DID. */
   active: boolean;
+  /**
+   * Optional W3C DID Core service endpoints.
+   * Empty array by default; updated via the identity-registry admin flow.
+   */
+  services: ServiceEndpoint[];
 }
 
 /**
@@ -44,16 +69,31 @@ export interface Credential {
   revoked: boolean;
 }
 
-/** Reason a credential is invalid. Returned in {@link VerifyResult}. */
-export type VerifyFailReason = "not_found" | "revoked" | "expired" | "unknown";
+/**
+ * Reason a credential is invalid. Returned in {@link VerifyResult}.
+ *
+ * - `EXPIRED` — the credential's `expiresAt` timestamp has passed.
+ * - `REVOKED` — the issuer has explicitly revoked the credential.
+ * - `INVALID_SIGNATURE` — the stored issuer signature does not match.
+ * - `UNKNOWN_ISSUER` — no credential was found for the given ID, or the
+ *   credential's issuer is no longer registered.
+ * - `INACTIVE_SUBJECT` — the subject's DID has been deactivated.
+ */
+export type VerifyFailReason =
+  | 'EXPIRED'
+  | 'REVOKED'
+  | 'INVALID_SIGNATURE'
+  | 'UNKNOWN_ISSUER'
+  | 'INACTIVE_SUBJECT';
 
 /**
- * Discriminated result from {@link CredentialClient.verifyCredential}. Callers
- * can branch on the literal `valid` field with no parsing required.
+ * Result from {@link CredentialClient.verifyCredential}.
+ *
+ * `valid` is `true` when the credential is active and unexpired.
+ * `reason` is present when `valid` is `false` and a specific failure cause
+ * could be determined from the contract's typed error response.
  */
-export type VerifyResult =
-  | { valid: true }
-  | { valid: false; reason: VerifyFailReason };
+export type VerifyResult = { valid: boolean; reason?: VerifyFailReason };
 
 export interface SorobanIdentityLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
@@ -67,7 +107,8 @@ export interface SorobanIdentityConfig {
   networkPassphrase: string;
   identityRegistryId: string;
   credentialManagerId: string;
-  reputationId?: string;
+  /** Contract ID for the reputation contract. Required when using {@link ReputationClient}. */
+  reputationId: string;
   /** Transaction timeout in seconds. Defaults to 30. */
   txTimeout?: number;
   /** Maximum concurrent RPC requests. Defaults to 5. */
@@ -76,6 +117,14 @@ export interface SorobanIdentityConfig {
   retryDelay?: number;
   /** Optional pluggable logger for RPC simulation/submission traces. */
   logger?: SorobanIdentityLogger;
+  /**
+   * Expected contract deployment version string (e.g. `"0.1.0"`).
+   *
+   * When set and it does not match the SDK's own version constant the SDK
+   * emits a `warn` log at construction time so operators can catch
+   * contract/SDK mismatches before they cause runtime failures.
+   */
+  version?: string;
 }
 
 /** Per-call options that override the global config. */
@@ -142,4 +191,41 @@ export interface PaginationOptions extends CallOptions {
  */
 export interface CredentialListOptions extends PaginationOptions {
   credentialType?: CredentialType;
+}
+
+/** Contract ID field validated by {@link validateConfig} for a specific client. */
+export type SorobanIdentityContractIdField =
+  | "identityRegistryId"
+  | "credentialManagerId"
+  | "reputationId";
+
+export interface ValidateConfigOptions {
+  /** Contract ID that must be present and valid for the calling client. */
+  contractIdField: SorobanIdentityContractIdField;
+}
+
+/**
+ * Validates a {@link SorobanIdentityConfig} at client construction time so
+ * misconfiguration fails fast with a descriptive error instead of a deep RPC failure.
+ */
+export function validateConfig(
+  config: SorobanIdentityConfig,
+  options: ValidateConfigOptions
+): void {
+  const rpcUrls = Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl];
+  if (rpcUrls.length === 0 || rpcUrls.some((url) => !url?.trim())) {
+    throw new Error("rpcUrl is required");
+  }
+
+  if (!config.networkPassphrase?.trim()) {
+    throw new Error("networkPassphrase is required");
+  }
+
+  const contractId = config[options.contractIdField];
+  if (!contractId?.trim()) {
+    throw new Error(`${options.contractIdField} is required`);
+  }
+  if (!StrKey.isValidContract(contractId)) {
+    throw new Error(`${options.contractIdField} is not a valid contract ID`);
+  }
 }

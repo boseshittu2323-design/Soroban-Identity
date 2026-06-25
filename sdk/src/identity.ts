@@ -4,15 +4,22 @@ import {
   TransactionBuilder,
   BASE_FEE,
   Keypair,
-  nativeToScVal,
   scValToNative,
   Account,
 } from "@stellar/stellar-sdk";
 import type { CallOptions, DidDocument, IdentityStorageStats, SorobanIdentityConfig, WriteResult } from "./types";
-import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
+import { validateConfig } from "./types";
+import { retryWithBackoff, validateStellarAddress, pollTransactionStatus, runConcurrent } from "./utils";
 import { ContractError, SorobanIdentityError } from "./errors";
 import { IDENTITY_REGISTRY_ERRORS } from "./error-codes";
 import { BaseClient } from "./base-client";
+import {
+  buildCreateDidArgs,
+  buildUpdateDidArgs,
+  buildResolveDidArgs,
+  buildHasActiveDidArgs,
+  buildDeactivateDidArgs,
+} from "./contract-args";
 
 // Dummy address used for lightweight initialization probes
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
@@ -36,6 +43,7 @@ export class IdentityClient extends BaseClient {
    * @param config SDK config including the deployed identity-registry contract ID.
    */
   constructor(config: SorobanIdentityConfig) {
+    validateConfig(config, { contractIdField: "identityRegistryId" });
     super(config, config.identityRegistryId);
   }
 
@@ -54,7 +62,7 @@ export class IdentityClient extends BaseClient {
         .addOperation(
           this.contract.call(
             "has_active_did",
-            nativeToScVal(PROBE_ADDRESS, { type: "address" })
+            ...buildHasActiveDidArgs({ controller: PROBE_ADDRESS })
           )
         )
         .setTimeout(10)
@@ -102,7 +110,6 @@ export class IdentityClient extends BaseClient {
   ): Promise<{ did: string } & WriteResult> {
     const account = await this.server.getAccount(keypair.publicKey());
 
-    const metaScVal = nativeToScVal(metadata, { type: "map" });
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
     const tx = new TransactionBuilder(account, {
@@ -112,8 +119,7 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "create_did",
-          nativeToScVal(keypair.publicKey(), { type: "address" }),
-          metaScVal
+          ...buildCreateDidArgs({ controller: keypair.publicKey(), metadata })
         )
       )
       .setTimeout(timeout)
@@ -180,8 +186,7 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "update_did",
-          nativeToScVal(keypair.publicKey(), { type: "address" }),
-          nativeToScVal(metadata, { type: "map" })
+          ...buildUpdateDidArgs({ controller: keypair.publicKey(), metadata })
         )
       )
       .setTimeout(timeout)
@@ -243,7 +248,7 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "resolve_did",
-          nativeToScVal(controllerAddress, { type: "address" })
+          ...buildResolveDidArgs({ controller: controllerAddress })
         )
       )
       .setTimeout(timeout)
@@ -291,7 +296,7 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "has_active_did",
-          nativeToScVal(controllerAddress, { type: "address" })
+          ...buildHasActiveDidArgs({ controller: controllerAddress })
         )
       )
       .setTimeout(timeout)
@@ -379,7 +384,7 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "deactivate_did",
-          nativeToScVal(keypair.publicKey(), { type: "address" })
+          ...buildDeactivateDidArgs({ controller: keypair.publicKey() })
         )
       )
       .setTimeout(this.config.txTimeout ?? 30)
@@ -409,6 +414,57 @@ export class IdentityClient extends BaseClient {
    * @returns The current {@link IdentityStorageStats}.
    * @throws {SorobanIdentityError} on simulation failure.
    */
+  /**
+   * List DID documents with offset-based pagination.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param page          1-based page number. Defaults to `1`.
+   * @param pageSize      Number of records per page. Defaults to `20`, capped
+   *                      to `100` server-side.
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns Array of {@link DidDocument} for the requested page.
+   * @throws {SorobanIdentityError} on simulation failure.
+   */
+  async listDIDs(
+    callerAddress: string,
+    page = 1,
+    pageSize = 20,
+    options?: CallOptions
+  ): Promise<DidDocument[]> {
+    validateStellarAddress(callerAddress);
+    const account = new Account(callerAddress, "0");
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const offset = (Math.max(1, page) - 1) * pageSize;
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          "list_dids",
+          nativeToScVal(offset, { type: "u32" }),
+          nativeToScVal(pageSize, { type: "u32" })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+    this.debug('sdk.simulation_result', { operation: 'identity.listDIDs', success: !isSimulationError });
+    if (isSimulationError) {
+      const errMsg = result.error ?? "";
+      const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
+      if (contractErr) throw contractErr;
+      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, "CONTRACT_ERROR");
+    }
+
+    return scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as DidDocument[];
+  }
+
   async getStorageStats(callerAddress: string, options?: CallOptions): Promise<IdentityStorageStats> {
     validateStellarAddress(callerAddress);
     const account = new Account(callerAddress, "0");
@@ -435,5 +491,62 @@ export class IdentityClient extends BaseClient {
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as IdentityStorageStats;
+  }
+
+  /**
+   * Resolve multiple DID documents in parallel.
+   *
+   * Runs up to `concurrency` (default: `config.maxConcurrentRequests ?? 5`)
+   * simulate calls simultaneously. Results are returned in the same order as
+   * `addresses`.
+   *
+   * @param addresses   Controller addresses to resolve.
+   * @param options     Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link DidDocument} in input order.
+   * @throws {SorobanIdentityError} if any individual resolution fails.
+   */
+  async resolveMany(
+    addresses: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<DidDocument[]> {
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      addresses,
+      (address) => this.resolveDid(address, options),
+      concurrency
+    );
+  }
+
+  /**
+   * Liveness probe — calls the on-chain `ping()` function.
+   *
+   * Returns the contract's `CONTRACT_VERSION` constant. Throws if the contract
+   * is not deployed or not responding.
+   *
+   * @param options Per-call overrides (currently `timeoutSeconds`).
+   * @returns The contract version number (currently `1`).
+   * @throws {SorobanIdentityError} with code `CONTRACT_ERROR` if the contract
+   *   does not respond.
+   */
+  async ping(options?: CallOptions): Promise<number> {
+    const account = new Account(PROBE_ADDRESS, "0");
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(this.contract.call("ping"))
+      .setTimeout(timeout)
+      .build();
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    if (SorobanRpc.Api.isSimulationError(result)) {
+      throw new SorobanIdentityError(
+        "Health check failed: identity-registry not responding",
+        "CONTRACT_ERROR"
+      );
+    }
+    return scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as number;
   }
 }

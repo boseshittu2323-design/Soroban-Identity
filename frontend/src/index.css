@@ -44,6 +44,8 @@
   --sybil-fail-border:        #dc2626;
   --filter-badge-active-bg:   #7c3aed;
   --filter-badge-active-text: #ffffff;
+  --btn-text:                 #ffffff;
+  --focus-ring:               #7c3aed;
 }
 
 /* ── Dark mode via system preference ─────────────────────────────────────────── */
@@ -91,6 +93,8 @@
     --sybil-fail-border:        #f87171;
     --filter-badge-active-bg:   #a78bfa;
     --filter-badge-active-text: #1e1b4b;
+    --btn-text:                 #ffffff;
+    --focus-ring:               #a78bfa;
   }
 }
 
@@ -138,6 +142,8 @@ html.dark {
   --sybil-fail-border:        #f87171;
   --filter-badge-active-bg:   #a78bfa;
   --filter-badge-active-text: #1e1b4b;
+  --btn-text:                 #ffffff;
+  --focus-ring:               #a78bfa;
 }
 
 /* ── Light mode forced via manual class toggle ───────────────────────────────── */
@@ -184,6 +190,8 @@ html.light {
   --sybil-fail-border:        #dc2626;
   --filter-badge-active-bg:   #7c3aed;
   --filter-badge-active-text: #ffffff;
+  --btn-text:                 #ffffff;
+  --focus-ring:               #7c3aed;
 }
 
 /* ── Base styles ─────────────────────────────────────────────────────────────── */
@@ -240,7 +248,7 @@ select {
 
 button {
   background: var(--accent);
-  color: #fff;
+  color: var(--btn-text);
   border: none;
   border-radius: 8px;
   padding: 0.6rem 1.2rem;
@@ -284,7 +292,7 @@ button:disabled { background: var(--btn-disabled-bg); color: var(--btn-disabled-
   padding: 0.5rem 1rem;
   border-radius: 8px;
 }
-.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tab.active { background: var(--accent); border-color: var(--accent); color: var(--btn-text); }
 
 /* ── Spinner ─────────────────────────────────────────────────────────────────── */
 
@@ -466,14 +474,14 @@ button:disabled { background: var(--btn-disabled-bg); color: var(--btn-disabled-
    Visible focus indicator for all interactive elements.
    Uses :focus-visible so mouse users don't see the ring. */
 :focus-visible {
-  outline: 2px solid var(--accent-light, #7c6af7);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
 /* Credential cards are divs with role="button" — same ring treatment */
 [role="button"]:focus-visible {
-  outline: 2px solid var(--accent-light, #7c6af7);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 0.5rem;
 }

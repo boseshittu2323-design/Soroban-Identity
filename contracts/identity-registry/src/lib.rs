@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
-    Map, String, Symbol,
+    Map, String, Symbol, Vec,
 };
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -30,6 +30,9 @@ const ADMIN: Symbol = symbol_short!("ADMIN");
 const DID_COUNT: Symbol = symbol_short!("DIDCNT");
 const TOTAL_DIDS: Symbol = symbol_short!("TOTDIDS");
 
+/// Byte prefix for on-chain DID strings (`did:stellar:<address>`).
+const DID_STELLAR_PREFIX: &[u8] = b"did:stellar:";
+
 /// ~1 year in ledgers (5-second ledger close time).
 /// Used as the TTL extension on every persistent read/write.
 const TTL_LEDGERS: u32 = 6_312_000;
@@ -42,6 +45,18 @@ const TTL_LEDGERS: u32 = 6_312_000;
 pub struct IdentityStorageStats {
     pub total_dids: u32,
     pub active_dids: u32,
+}
+
+/// W3C DID Core service endpoint entry (optional field on {@link DidDocument}).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceEndpoint {
+    /// URI identifying this service endpoint (e.g. `did:stellar:…#messaging`).
+    pub id: String,
+    /// Service type (e.g. `DIDCommMessaging`, `CredentialService`).
+    pub type_: String,
+    /// URL or URI where the service can be reached.
+    pub service_endpoint: String,
 }
 
 /// W3C-aligned DID document stored on-chain.
@@ -60,6 +75,8 @@ pub struct DidDocument {
     pub updated_at: u64,
     /// Whether this DID is active
     pub active: bool,
+    /// W3C DID Core optional service endpoints (empty by default).
+    pub services: Vec<ServiceEndpoint>,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -81,6 +98,8 @@ impl IdentityRegistry {
     /// Must be called once before any other function. Subsequent calls will
     /// return [`ContractError::AlreadyInitialized`].
     ///
+    /// Follows the canonical pattern documented in `contracts/README.md`.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `admin` - The address that will have admin privileges over this registry.
@@ -89,10 +108,9 @@ impl IdentityRegistry {
     /// Returns [`ContractError::AlreadyInitialized`] if the contract has already
     /// been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        if env.storage().instance().has(&ADMIN) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&ADMIN, &admin);
+        Self::require_uninitialized(&env)?;
+        Self::set_admin(&env, &admin);
+        env.events().publish((ADMIN, symbol_short!("init")), admin);
         Ok(())
     }
 
@@ -193,7 +211,10 @@ impl IdentityRegistry {
 
         Self::validate_metadata(&metadata)?;
 
-        let did_id = Self::build_did_id(&env, &controller)?;
+        let did_id = Self::build_did_string(&env, &controller);
+        if !Self::validate_did_format(&env, &did_id) {
+            return Err(ContractError::DidNotFound);
+        }
         let now = env.ledger().timestamp();
 
         let doc = DidDocument {
@@ -203,6 +224,7 @@ impl IdentityRegistry {
             created_at: now,
             updated_at: now,
             active: true,
+            services: Vec::new(&env),
         };
 
         storage.set(&key, &doc);
@@ -384,6 +406,19 @@ impl IdentityRegistry {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// Canonical init guard — see `contracts/README.md`.
+    fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
+        if env.storage().instance().has(&ADMIN) {
+            return Err(ContractError::AlreadyInitialized);
+        }
+        Ok(())
+    }
+
+    /// Canonical admin persistence — see `contracts/README.md`.
+    fn set_admin(env: &Env, admin: &Address) {
+        env.storage().instance().set(&ADMIN, admin);
+    }
+
     fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError> {
         for (k, v) in metadata.iter() {
             if k.len() > 64 || v.len() > 256 {
@@ -397,21 +432,20 @@ impl IdentityRegistry {
         (IDENTITY, controller.clone())
     }
 
-    fn build_did_id(env: &Env, controller: &Address) -> Result<String, ContractError> {
+    /// Builds a `did:stellar:<address>` string from a controller address.
+    ///
+    /// Pure construction helper — callers validate format separately via
+    /// [`Self::validate_did_format`].
+    fn build_did_string(env: &Env, controller: &Address) -> String {
         let addr_str = controller.to_string();
         let mut addr_bytes = [0u8; 56];
         addr_str.copy_into_slice(&mut addr_bytes);
 
+        let prefix_len = DID_STELLAR_PREFIX.len();
         let mut result = [0u8; 68];
-        result[..12].copy_from_slice(b"did:stellar:");
-        result[12..].copy_from_slice(&addr_bytes);
-        let did = String::from_bytes(env, &result);
-
-        if !Self::validate_did_format(env, &did) {
-            return Err(ContractError::DidNotFound);
-        }
-
-        Ok(did)
+        result[..prefix_len].copy_from_slice(DID_STELLAR_PREFIX);
+        result[prefix_len..].copy_from_slice(&addr_bytes);
+        String::from_bytes(env, &result)
     }
 
     fn validate_did_format(env: &Env, did: &String) -> bool {
@@ -419,8 +453,7 @@ impl IdentityRegistry {
             return false;
         }
         let did_bytes = Self::string_to_bytes(env, did);
-        let prefix = b"did:stellar:";
-        for (i, expected) in prefix.iter().enumerate() {
+        for (i, expected) in DID_STELLAR_PREFIX.iter().enumerate() {
             if did_bytes.get(i as u32).unwrap() != *expected {
                 return false;
             }
@@ -445,6 +478,41 @@ mod tests {
     use soroban_sdk::{testutils::Address as _, Env, Map};
     extern crate std;
     use std::string::ToString;
+
+    #[test]
+    fn test_ping_returns_version() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+        assert_eq!(client.ping(), CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn test_upgrade_unauthorized_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        client.initialize(&admin);
+
+        let result = client.try_upgrade(&attacker, &BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_upgrade_not_initialized_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let result = client.try_upgrade(&admin, &BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
 
     #[test]
     fn test_double_initialize_returns_error() {
@@ -707,5 +775,37 @@ mod tests {
         let stats = client.get_storage_stats();
         assert_eq!(stats.total_dids, 2);
         assert_eq!(stats.active_dids, 1);
+    }
+
+    /// Storage key byte prefixes must be pairwise distinct.
+    #[test]
+    fn test_storage_prefixes_are_unique() {
+        let prefixes: &[&[u8]] = &[DID_STELLAR_PREFIX];
+        for (i, left) in prefixes.iter().enumerate() {
+            for right in prefixes.iter().skip(i + 1) {
+                assert_ne!(left, right);
+            }
+        }
+    }
+
+    /// build_did_string produces the expected did:stellar:<address> form.
+    #[test]
+    fn test_build_did_string() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let user = Address::generate(&env);
+        let did = IdentityRegistry::build_did_string(&env, &user);
+
+        let did_str = did.to_string();
+        assert!(did_str.starts_with("did:stellar:"));
+
+        let expected_addr = user.to_string();
+        let mut expected_addr_bytes = [0u8; 56];
+        expected_addr.copy_into_slice(&mut expected_addr_bytes);
+        let expected_addr = std::str::from_utf8(&expected_addr_bytes).unwrap();
+        let addr_part = &did_str[DID_STELLAR_PREFIX.len()..];
+        assert_eq!(addr_part, expected_addr);
+        assert!(IdentityRegistry::validate_did_format(&env, &did));
     }
 }

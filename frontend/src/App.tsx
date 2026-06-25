@@ -17,7 +17,10 @@ import {
 import { checkConnection, IdentityClient, CredentialClient, ReputationClient } from "../../sdk/src/index";
 import type { Credential } from "../../sdk/src/types";
 
-type Tab = "identity" | "credentials";
+export enum Tab {
+  Identity = "identity",
+  Credentials = "credentials",
+}
 
 function useDarkMode(): [boolean, () => void] {
   const [isDark, setIsDark] = useState<boolean>(() => {
@@ -37,7 +40,7 @@ function useDarkMode(): [boolean, () => void] {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("identity");
+  const [tab, setTab] = useState<Tab>(Tab.Identity);
   const [activeNetwork, setActiveNetwork] = useState<NetworkName>(DEFAULT_NETWORK);
   const [verifyId, setVerifyId] = useState<string | null>(null);
   const networkConfig = NETWORK_CONFIGS[activeNetwork];
@@ -53,7 +56,7 @@ export default function App() {
     const verifyParam = urlParams.get("verify");
     if (verifyParam) {
       setVerifyId(verifyParam);
-      setTab("credentials");
+      setTab(Tab.Credentials);
     }
   }, []);
 
@@ -92,25 +95,10 @@ export default function App() {
     checkInit();
   }, [networkConfig.rpcUrl]);
 
-  // Mock fetch — replace with CredentialClient.getCredentialsBySubject() when wired
+  // TODO: integrate SDK — replace with CredentialClient.getCredentialsBySubject() (see issue #226)
   const fetchCredentials = useCallback(
     async (_address: string): Promise<Credential[]> => {
-      await new Promise((r) => setTimeout(r, 200));
-      const now = Math.floor(Date.now() / 1000);
-      return [
-        {
-          id: "abc003",
-          credentialType: "Reputation",
-          subject: _address,
-          issuer: "GISSUER",
-          claims: {},
-          claimsHash: "mockhash",
-          signature: "",
-          issuedAt: now - 100,
-          expiresAt: now + 3 * 24 * 60 * 60,
-          revoked: false,
-        },
-      ];
+      return [];
     },
     [],
   );
@@ -286,22 +274,22 @@ export default function App() {
 
       <div className="tabs">
         <button
-          className={`tab ${tab === "identity" ? "active" : ""}`}
-          onClick={() => setTab("identity")}
+          className={`tab ${tab === Tab.Identity ? "active" : ""}`}
+          onClick={() => setTab(Tab.Identity)}
         >
           {t("tabs.identity")}
         </button>
         <button
-          className={`tab ${tab === "credentials" ? "active" : ""}`}
-          onClick={() => setTab("credentials")}
+          className={`tab ${tab === Tab.Credentials ? "active" : ""}`}
+          onClick={() => setTab(Tab.Credentials)}
         >
           {t("tabs.credentials")}
         </button>
       </div>
 
       <ErrorBoundary>
-        {tab === "identity" && <IdentityPanel />}
-        {tab === "credentials" && (
+        {tab === Tab.Identity && <IdentityPanel />}
+        {tab === Tab.Credentials && (
           <CredentialsPanel verifyId={verifyId} />
         )}
       </ErrorBoundary>

@@ -1,8 +1,7 @@
 #![no_std]
 
-use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes,
     BytesN, Env, Map, String, Symbol, Vec,
 };
 use soroban_sdk::xdr::ToXdr;
@@ -15,8 +14,11 @@ pub const CONTRACT_VERSION: u32 = 1;
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
 const CRED: Symbol = symbol_short!("CRED");
+const SUBJECT: Symbol = symbol_short!("sub");
 const CRED_CNT: Symbol = symbol_short!("CREDCNT");
 const REVOKED_CNT: Symbol = symbol_short!("REVCNT");
+/// Secondary index: maps each issuer address to the IDs it has issued.
+const ISSUER_CREDS: Symbol = symbol_short!("ISSCREDS");
 
 const MAX_ISSUERS: u32 = 100;
 
@@ -132,6 +134,8 @@ impl CredentialManager {
     /// Must be called once before any other function. Subsequent calls will
     /// return [`ContractError::AlreadyInitialized`].
     ///
+    /// Follows the canonical pattern documented in `contracts/README.md`.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `admin` - The address that will have admin privileges over this contract.
@@ -140,10 +144,9 @@ impl CredentialManager {
     /// Returns [`ContractError::AlreadyInitialized`] if the contract has already
     /// been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        if env.storage().instance().has(&ADMIN) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&ADMIN, &admin);
+        Self::require_uninitialized(&env)?;
+        Self::set_admin(&env, &admin);
+        env.events().publish((ADMIN, symbol_short!("init")), admin);
         Ok(())
     }
 
@@ -340,6 +343,15 @@ impl CredentialManager {
             .persistent()
             .extend_ttl(&subject_key, TTL_MAX, TTL_MAX);
 
+        // Index credential under issuer for reverse lookup
+        let mut issuer_creds = Self::fetch_issuer_creds(&env, &issuer);
+        issuer_creds.push_back(id.clone());
+        let issuer_creds_key = Self::issuer_creds_key(&issuer);
+        env.storage().persistent().set(&issuer_creds_key, &issuer_creds);
+        env.storage()
+            .persistent()
+            .extend_ttl(&issuer_creds_key, TTL_MAX, TTL_MAX);
+
         // Increment per-subject credential counter
         let cnt_key = (CRED_CNT, subject.clone());
         let cnt: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0);
@@ -398,7 +410,8 @@ impl CredentialManager {
         Ok(())
     }
 
-    /// Verifies that a credential is valid — not revoked and not expired.
+    /// Verifies that a credential is valid and returns a typed result describing
+    /// any failure reason.
     ///
     /// Uses the on-chain ledger timestamp for expiry checks, preventing
     /// caller-supplied time spoofing. Bumps the storage TTL on success so
@@ -409,24 +422,31 @@ impl CredentialManager {
     /// * `credential_id` - The 32-byte ID of the credential to verify.
     ///
     /// # Returns
-    /// `true` if the credential exists, is not revoked, and has not expired.
-    /// `false` otherwise (including if the credential does not exist).
-    pub fn verify_credential(env: Env, credential_id: BytesN<32>) -> bool {
+    /// `Ok(())` if the credential exists, is not revoked, and has not expired.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::CredentialNotFound`] when no credential with the
+    /// given ID exists.
+    /// Returns [`ContractError::CredentialRevoked`] when the credential has been
+    /// revoked.
+    /// Returns [`ContractError::CredentialExpired`] when the credential's
+    /// `expires_at` timestamp has passed (checked against the ledger clock).
+    pub fn verify_credential(env: Env, credential_id: BytesN<32>) -> Result<(), ContractError> {
         let key = Self::cred_key(&credential_id);
         match env.storage().persistent().get::<_, Credential>(&key) {
-            None => false,
+            None => Err(ContractError::CredentialNotFound),
             Some(cred) => {
                 if cred.revoked {
-                    return false;
+                    return Err(ContractError::CredentialRevoked);
                 }
                 let now = env.ledger().timestamp();
                 if cred.expires_at > 0 && now > cred.expires_at {
-                    return false;
+                    return Err(ContractError::CredentialExpired);
                 }
                 // Bump TTL on read for active, non-expired credentials
                 let ttl = Self::ttl_for_credential(&env, cred.expires_at);
                 env.storage().persistent().extend_ttl(&key, ttl, ttl);
-                true
+                Ok(())
             }
         }
     }
@@ -665,7 +685,80 @@ impl CredentialManager {
         }
     }
 
+    /// Returns all credential IDs issued by a given issuer address.
+    ///
+    /// The list includes both active and revoked credential IDs. Use
+    /// [`Self::verify_credential`] to check the status of each ID.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `issuer` - The issuer address whose credential IDs to retrieve.
+    pub fn get_issuer_credentials(env: Env, issuer: Address) -> Vec<BytesN<32>> {
+        Self::fetch_issuer_creds(&env, &issuer)
+    }
+
+    /// Returns one page of credential IDs issued by a given issuer, ordered by
+    /// issuance.
+    ///
+    /// Pagination follows the same cursor model as
+    /// [`Self::list_subject_credentials`]: `cursor` is the zero-based start
+    /// index, `limit` is the page size (clamped to [`PAGE_CAP`], `0` →
+    /// `PAGE_CAP`). `next_cursor` is `None` when the iterator is exhausted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `issuer` - The issuer address whose credential IDs to retrieve.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    pub fn list_issuer_credentials(
+        env: Env,
+        issuer: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> CredentialIdsPage {
+        let all = Self::fetch_issuer_creds(&env, &issuer);
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<BytesN<32>> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            items.push_back(all.get(next as u32).unwrap());
+            next += 1;
+            taken += 1;
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        CredentialIdsPage { items, next_cursor }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Canonical init guard — see `contracts/README.md`.
+    fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
+        if env.storage().instance().has(&ADMIN) {
+            return Err(ContractError::AlreadyInitialized);
+        }
+        Ok(())
+    }
+
+    /// Canonical admin persistence — see `contracts/README.md`.
+    fn set_admin(env: &Env, admin: &Address) {
+        env.storage().instance().set(&ADMIN, admin);
+    }
 
     fn require_admin(env: &Env) -> Result<(), ContractError> {
         let admin: Address = env
@@ -703,6 +796,21 @@ impl CredentialManager {
             .unwrap_or_else(|| Vec::new(env))
     }
 
+    fn fetch_issuer_creds(env: &Env, issuer: &Address) -> Vec<BytesN<32>> {
+        let key = Self::issuer_creds_key(issuer);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_MAX, TTL_MAX);
+        }
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn issuer_creds_key(issuer: &Address) -> (Symbol, Address) {
+        (ISSUER_CREDS, issuer.clone())
+    }
+
     fn derive_id(
         env: &Env,
         issuer: &Address,
@@ -727,7 +835,7 @@ impl CredentialManager {
     }
 
     fn subject_key(subject: &Address) -> (Symbol, Address) {
-        (symbol_short!("sub"), subject.clone())
+        (SUBJECT, subject.clone())
     }
 
     /// Compute TTL ledgers for a credential.
@@ -788,6 +896,33 @@ mod tests {
     }
 
     #[test]
+    fn test_ping_returns_version() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, CredentialManager);
+        let client = CredentialManagerClient::new(&env, &contract_id);
+        assert_eq!(client.ping(), CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn test_upgrade_unauthorized_returns_error() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let result = client.try_upgrade(&attacker, &BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_upgrade_not_initialized_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CredentialManager);
+        let client = CredentialManagerClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let result = client.try_upgrade(&admin, &BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
     fn test_issue_and_verify() {
         let (env, _admin, client) = setup();
         let issuer = Address::generate(&env);
@@ -795,7 +930,7 @@ mod tests {
         client.add_issuer(&issuer);
 
         let cred_id = issue_kyc(&env, &client, &issuer, &subject);
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
     }
 
     #[test]
@@ -807,20 +942,24 @@ mod tests {
 
         let cred_id = issue_kyc(&env, &client, &issuer, &subject);
         client.revoke_credential(&issuer, &cred_id);
-        assert!(!client.verify_credential(&cred_id));
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialRevoked))
+        );
     }
 
     #[test]
-    #[should_panic]
     fn test_issue_credential_already_expired() {
         let (env, _admin, client) = setup();
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
         client.add_issuer(&issuer);
 
-        let past_expiry = env.ledger().timestamp().saturating_sub(1);
+        // Advance ledger so timestamp > 0, then use a strictly past expiry
+        env.ledger().with_mut(|li| li.timestamp = 100);
+        let past_expiry = 50u64;
         let sig = Bytes::from_array(&env, &[0u8; 64]);
-        client.issue_credential(
+        let result = client.try_issue_credential(
             &issuer,
             &subject,
             &CredentialType::Kyc,
@@ -829,6 +968,7 @@ mod tests {
             &sig,
             &past_expiry,
         );
+        assert_eq!(result, Err(Ok(ContractError::CredentialExpired)));
     }
 
     #[test]
@@ -868,11 +1008,14 @@ mod tests {
             &expires_at,
         );
 
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
         env.ledger().with_mut(|li| {
             li.timestamp = expires_at + 1;
         });
-        assert!(!client.verify_credential(&cred_id));
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialExpired))
+        );
     }
 
     #[test]
@@ -897,7 +1040,7 @@ mod tests {
         );
 
         // Credential should be valid immediately
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
 
         // Advance ledger time past expiry
         env.ledger().with_mut(|li| {
@@ -906,7 +1049,10 @@ mod tests {
 
         // Credential should now be invalid - verify_credential uses env.ledger().timestamp(),
         // not any caller-provided value, preventing spoofing of time
-        assert!(!client.verify_credential(&cred_id));
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialExpired))
+        );
     }
 
     #[test]
@@ -1089,7 +1235,7 @@ mod tests {
 
         // Re-issuance after revoke must succeed
         let new_id = issue_kyc(&env, &client, &issuer, &subject);
-        assert!(client.verify_credential(&new_id));
+        client.verify_credential(&new_id);
     }
 
     #[test]
@@ -1116,7 +1262,7 @@ mod tests {
         );
 
         // Credential should still be verifiable (TTL was set)
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
     }
 
     #[test]
@@ -1141,8 +1287,8 @@ mod tests {
         );
 
         // Two consecutive verifies — both should succeed (TTL bumped on first)
-        assert!(client.verify_credential(&cred_id));
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
+        client.verify_credential(&cred_id);
     }
 
     #[test]
@@ -1168,12 +1314,15 @@ mod tests {
 
         client.revoke_credential(&issuer, &cred_id);
 
-        // verify_credential returns false for revoked — no TTL bump
-        assert!(!client.verify_credential(&cred_id));
+        // verify_credential returns CredentialRevoked for revoked — no TTL bump
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialRevoked))
+        );
 
-        // get_credential still returns the record (not extended)
-        let cred = client.get_credential(&cred_id);
-        assert!(cred.revoked);
+        // get_credential returns CredentialRevoked for revoked entries
+        let result = client.try_get_credential(&cred_id);
+        assert!(matches!(result, Err(Ok(ContractError::CredentialRevoked))));
     }
 
     fn issue_typed(
@@ -1320,5 +1469,16 @@ mod tests {
         let page = client.list_subject_credentials(&subject, &None, &0, &None);
         assert_eq!(page.items.len(), 3);
         assert_eq!(page.next_cursor, None);
+    }
+
+    /// Storage namespace symbols must be pairwise distinct.
+    #[test]
+    fn test_storage_key_symbols_are_unique() {
+        let keys = [ADMIN, ISSUER, CRED, SUBJECT, CRED_CNT, REVOKED_CNT, ISSUER_CREDS];
+        for (i, left) in keys.iter().enumerate() {
+            for right in keys.iter().skip(i + 1) {
+                assert_ne!(left, right);
+            }
+        }
     }
 }

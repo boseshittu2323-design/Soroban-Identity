@@ -4,12 +4,37 @@
  *
  * - `NOT_FOUND` — record (DID, credential, reporter) does not exist
  * - `UNAUTHORIZED` — caller is not authorised for the requested operation
+ * - `ALREADY_EXISTS` — creation conflicts; record already registered (#249)
+ * - `INVALID_INPUT` — caller-provided data failed schema/shape validation (#249)
  * - `NETWORK_ERROR` — transport failure, RPC timeout, etc.
- * - `VALIDATION_ERROR` — bad input shape (malformed hex, missing config, …)
  * - `CONTRACT_ERROR` — contract returned a non-zero error code or simulation failed
+ * - `RATE_LIMITED` — rate limit exhaustion (#254)
+ * - `VALIDATION_ERROR` — retained for backwards-compatibility
  * - `UNKNOWN` — fallback when no other code fits
  */
-export type SorobanErrorCode = 'NOT_FOUND' | 'UNAUTHORIZED' | 'NETWORK_ERROR' | 'VALIDATION_ERROR' | 'CONTRACT_ERROR' | 'UNKNOWN';
+export type SorobanErrorCode =
+  | "NOT_FOUND"
+  | "UNAUTHORIZED"
+  | "ALREADY_EXISTS"
+  | "INVALID_INPUT"
+  | "NETWORK_ERROR"
+  | "TIMEOUT"
+  | "CONTRACT_ERROR"
+  | "RATE_LIMITED"
+  | "VALIDATION_ERROR"
+  | "UNKNOWN";
+
+export interface SorobanIdentityErrorInit {
+  code?: SorobanErrorCode;
+  details?: Record<string, unknown>;
+  originalError?: unknown;
+  /** Transaction hash when the failure is tied to an on-chain submission. */
+  txHash?: string;
+}
+
+function isInitObject(v: unknown): v is SorobanIdentityErrorInit {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 
 /**
  * SDK-level error wrapping all client-side failure paths.
@@ -29,19 +54,77 @@ export type SorobanErrorCode = 'NOT_FOUND' | 'UNAUTHORIZED' | 'NETWORK_ERROR' | 
 export class SorobanIdentityError extends Error {
   /** Discriminator code — see {@link SorobanErrorCode}. */
   readonly code: SorobanErrorCode;
+  readonly details?: Record<string, unknown>;
   /** The underlying error, if this wraps one. */
   readonly originalError?: unknown;
+  /** Transaction hash when the failure is tied to an on-chain submission. */
+  readonly txHash?: string;
 
   /**
+   * Backwards-compatible positional signature:
+   *   `new SorobanIdentityError(msg, codeString, originalError)`.
+   * Init-object signature:
+   *   `new SorobanIdentityError(msg, { code, details, originalError, txHash })`.
+   *
    * @param message       Human-readable error message.
-   * @param code          {@link SorobanErrorCode}. Defaults to `'UNKNOWN'`.
-   * @param originalError Optional wrapped error for diagnostic purposes.
+   * @param codeOrInit    {@link SorobanErrorCode} or init object. Defaults to `'UNKNOWN'`.
+   * @param originalError Optional wrapped error (positional form only).
    */
-  constructor(message: string, code: SorobanErrorCode = 'UNKNOWN', originalError?: unknown) {
+  constructor(
+    message: string,
+    codeOrInit: SorobanErrorCode | SorobanIdentityErrorInit = "UNKNOWN",
+    originalError?: unknown,
+  ) {
     super(message);
-    this.name = 'SorobanIdentityError';
-    this.code = code;
-    this.originalError = originalError;
+    this.name = "SorobanIdentityError";
+    if (isInitObject(codeOrInit)) {
+      this.code = codeOrInit.code ?? "UNKNOWN";
+      this.details = codeOrInit.details;
+      this.originalError = codeOrInit.originalError ?? originalError;
+      this.txHash = codeOrInit.txHash;
+    } else {
+      this.code = codeOrInit;
+      this.originalError = originalError;
+    }
+  }
+
+  toEnvelope(): { code: SorobanErrorCode; message: string; details?: Record<string, unknown>; txHash?: string } {
+    return {
+      code: this.code,
+      message: this.message,
+      ...(this.details ? { details: this.details } : {}),
+      ...(this.txHash ? { txHash: this.txHash } : {}),
+    };
+  }
+}
+
+/**
+ * Thrown when the RPC provider responds with HTTP 429 and the SDK has
+ * exhausted its retry budget. Consumers should honour `retryAfterMs`
+ * before re-submitting the request.
+ *
+ * @example
+ * ```ts
+ * import { RateLimitError } from '@soroban-identity/sdk';
+ * try {
+ *   await identity.resolveDid(address);
+ * } catch (err) {
+ *   if (err instanceof RateLimitError) {
+ *     await sleep(err.retryAfterMs);
+ *     // retry…
+ *   }
+ * }
+ * ```
+ */
+export class RateLimitError extends Error {
+  /** Milliseconds to wait before the next request attempt. */
+  readonly retryAfterMs: number;
+  readonly code: SorobanErrorCode = "RATE_LIMITED";
+
+  constructor(retryAfterMs: number) {
+    super(`Rate limited — retry after ${retryAfterMs}ms`);
+    this.name = "RateLimitError";
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -62,7 +145,7 @@ export class ContractError extends Error {
    */
   constructor(code: number, errorMap: Record<number, string>) {
     super(errorMap[code] ?? `Contract error code ${code}`);
-    this.name = 'ContractError';
+    this.name = "ContractError";
     this.code = code;
   }
 
@@ -78,6 +161,46 @@ export class ContractError extends Error {
   static extract(errMsg: string, errorMap: Record<number, string>): ContractError | null {
     const match = errMsg.match(/#(\d+)/);
     if (!match) return null;
-    return new ContractError(parseInt(match[1], 10), errorMap);
+    const code = parseInt(match[1] as string, 10);
+    if (Number.isNaN(code)) return null;
+    return new ContractError(code, errorMap);
   }
+
+  toEnvelope(): { code: SorobanErrorCode; message: string; details: Record<string, unknown> } {
+    return {
+      code: "CONTRACT_ERROR",
+      message: this.message,
+      details: { contractCode: this.code },
+    };
+  }
+}
+
+/**
+ * Map a free-form error message (panic string, RPC error message,
+ * etc.) to the envelope code. Falls back to `UNKNOWN` so call sites
+ * can wrap-and-rethrow without case explosion.
+ */
+export function classifyError(message: string): SorobanErrorCode {
+  const m = message.toLowerCase();
+  if (/already\s+(registered|exists|active|issued)/u.test(m)) return "ALREADY_EXISTS";
+  if (/not\s+(found|registered|active)|no such/u.test(m)) return "NOT_FOUND";
+  if (/unauthori[sz]ed|forbidden|permission denied/u.test(m)) return "UNAUTHORIZED";
+  if (/rate limit|too many requests/u.test(m)) return "RATE_LIMITED";
+  if (/invalid|malformed|bad request|missing/u.test(m)) return "INVALID_INPUT";
+  if (/timed?\s*out|timeout/u.test(m)) return "TIMEOUT";
+  if (/econnrefused|enotfound|network|fetch failed/u.test(m)) return "NETWORK_ERROR";
+  if (/#\d+/.test(m)) return "CONTRACT_ERROR";
+  return "UNKNOWN";
+}
+
+/**
+ * Wrap any thrown value into a `SorobanIdentityError` with a code
+ * derived from its message. Idempotent — already-wrapped errors
+ * pass through.
+ */
+export function wrapError(err: unknown, fallbackMessage = "unexpected SDK error"): SorobanIdentityError {
+  if (err instanceof SorobanIdentityError) return err;
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : fallbackMessage;
+  return new SorobanIdentityError(message, { code: classifyError(message), originalError: err });
 }
