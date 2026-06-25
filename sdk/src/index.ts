@@ -4,6 +4,14 @@ export { health, healthCheck } from './health';
 export type { HealthResult, HealthCheckResult } from './health';
 export { CredentialClient } from './credentials';
 export { ReputationClient } from './reputation';
+export { PresentationClient } from './presentation';
+export type {
+  VerifiablePresentation,
+  VerifiableCredentialSubset,
+  PresentationProof,
+  PresentationVerifyResult,
+  PresentationVerifyFailReason,
+} from './presentation';
 export { SorobanEventListener, getEvents } from './events';
 export { SorobanTransactionBuilder } from './transaction-builder';
 export { RequestQueue } from './request-queue';
@@ -55,6 +63,8 @@ export {
   buildSubmitScoreArgs,
   buildListReportersArgs,
   buildListHistoryArgs,
+  buildGetIssuerCredentialsArgs,
+  buildListIssuerCredentialsArgs,
 } from './contract-args';
 export type {
   DidDocument,

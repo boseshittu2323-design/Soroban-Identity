@@ -69,16 +69,31 @@ export interface Credential {
   revoked: boolean;
 }
 
-/** Reason a credential is invalid. Returned in {@link VerifyResult}. */
-export type VerifyFailReason = "not_found" | "revoked" | "expired" | "unknown";
+/**
+ * Reason a credential is invalid. Returned in {@link VerifyResult}.
+ *
+ * - `EXPIRED` — the credential's `expiresAt` timestamp has passed.
+ * - `REVOKED` — the issuer has explicitly revoked the credential.
+ * - `INVALID_SIGNATURE` — the stored issuer signature does not match.
+ * - `UNKNOWN_ISSUER` — no credential was found for the given ID, or the
+ *   credential's issuer is no longer registered.
+ * - `INACTIVE_SUBJECT` — the subject's DID has been deactivated.
+ */
+export type VerifyFailReason =
+  | 'EXPIRED'
+  | 'REVOKED'
+  | 'INVALID_SIGNATURE'
+  | 'UNKNOWN_ISSUER'
+  | 'INACTIVE_SUBJECT';
 
 /**
- * Discriminated result from {@link CredentialClient.verifyCredential}. Callers
- * can branch on the literal `valid` field with no parsing required.
+ * Result from {@link CredentialClient.verifyCredential}.
+ *
+ * `valid` is `true` when the credential is active and unexpired.
+ * `reason` is present when `valid` is `false` and a specific failure cause
+ * could be determined from the contract's typed error response.
  */
-export type VerifyResult =
-  | { valid: true }
-  | { valid: false; reason: VerifyFailReason };
+export type VerifyResult = { valid: boolean; reason?: VerifyFailReason };
 
 export interface SorobanIdentityLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
