@@ -1,5 +1,8 @@
 import { SorobanRpc, Contract } from "@stellar/stellar-sdk";
 import type { SorobanIdentityConfig, SorobanIdentityLogger } from "./types";
+
+/** Semantic version of this SDK build — must match package.json `version`. */
+export const SDK_VERSION = "0.1.0";
 import { RequestQueue } from "./request-queue";
 
 const serverCache = new Map<string, SorobanRpc.Server>();
@@ -33,6 +36,14 @@ const noopLogger: SorobanIdentityLogger = {
   debug: () => undefined,
 };
 
+/**
+ * Abstract base class shared by all SDK clients.
+ *
+ * Provides RPC endpoint failover across multiple `rpcUrl` entries, a
+ * concurrency-controlled {@link RequestQueue}, and a pluggable
+ * {@link SorobanIdentityLogger}. Concrete clients extend this class and add
+ * contract-specific methods.
+ */
 export abstract class BaseClient {
   protected servers: SorobanRpc.Server[];
   protected currentServerIndex = 0;
@@ -41,6 +52,10 @@ export abstract class BaseClient {
   protected requestQueue: RequestQueue;
   protected logger: SorobanIdentityLogger;
 
+  /**
+   * @param config     SDK configuration including one or more RPC URLs.
+   * @param contractId Deployed contract ID that this client wraps.
+   */
   constructor(config: SorobanIdentityConfig, contractId: string) {
     this.config = config;
 
@@ -54,6 +69,13 @@ export abstract class BaseClient {
       config.retryDelay || 1000
     );
     this.logger = config.logger ?? noopLogger;
+
+    if (config.version && config.version !== SDK_VERSION) {
+      this.logger.warn?.(
+        `sdk.version_mismatch: configured version "${config.version}" does not match SDK version "${SDK_VERSION}". ` +
+          "Ensure the deployed contracts match this SDK release."
+      );
+    }
   }
 
   protected get server(): SorobanRpc.Server {
@@ -64,6 +86,18 @@ export abstract class BaseClient {
     this.logger.debug(message, meta);
   }
 
+  /**
+   * Execute `fn` against the current RPC server, failing over to the next URL
+   * in the pool on 5xx / connection errors. Updates `currentServerIndex` on
+   * a successful attempt so future calls prefer the healthy endpoint.
+   *
+   * Contract-level errors (non-network) are NOT retried — only transport
+   * failures trigger failover.
+   *
+   * @param fn Async function that receives the active {@link SorobanRpc.Server}.
+   * @returns The value returned by `fn` on the first successful attempt.
+   * @throws The last error encountered if all servers fail.
+   */
   protected async executeWithFailover<T>(fn: (server: SorobanRpc.Server) => Promise<T>): Promise<T> {
     return this.requestQueue.enqueue(async () => {
       let lastError: any;

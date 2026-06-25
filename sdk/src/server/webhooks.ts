@@ -34,6 +34,12 @@ export interface WebhookStore {
   forEvent(event: WebhookEvent): Promise<WebhookRegistration[]>;
 }
 
+/**
+ * In-process {@link WebhookStore} backed by a plain `Map`.
+ *
+ * Suitable for tests and single-process deployments. Replace with a
+ * persistent store in multi-node production environments.
+ */
 export class InMemoryWebhookStore implements WebhookStore {
   private readonly byId = new Map<string, WebhookRegistration>();
 
@@ -71,6 +77,29 @@ export interface RegisterWebhookOptions {
   now?: () => number;
 }
 
+/**
+ * Register a new webhook endpoint in `store`.
+ *
+ * Validates the URL scheme (must be `http` or `https`), secret length (≥ 16
+ * characters), and event list (must be a non-empty subset of
+ * {@link WEBHOOK_EVENTS}).
+ *
+ * @param store   Backing store to persist the registration.
+ * @param input   URL, secret, and event subscriptions for the new webhook.
+ * @param options Optional ID and clock overrides (useful for tests).
+ * @returns The persisted {@link WebhookRegistration}.
+ * @throws {SorobanIdentityError} with code `INVALID_INPUT` when validation
+ *   fails, or `ALREADY_EXISTS` on ID collision.
+ *
+ * @example
+ * ```ts
+ * const reg = await registerWebhook(store, {
+ *   url: 'https://example.com/hooks',
+ *   secret: 'my-secret-passphrase',
+ *   events: ['credential.issued'],
+ * });
+ * ```
+ */
 export async function registerWebhook(
   store: WebhookStore,
   input: RegisterWebhookInput,
@@ -137,10 +166,25 @@ const HEADER_SIGNATURE = "X-SorobanIdentity-Signature";
 const HEADER_EVENT = "X-SorobanIdentity-Event";
 const HEADER_ID = "X-SorobanIdentity-Delivery-Id";
 
+/**
+ * Compute the HMAC-SHA256 hex signature for a webhook payload.
+ *
+ * @param secret Webhook secret as provided at registration.
+ * @param body   JSON-serialised payload string to sign.
+ * @returns 64-character lowercase hex HMAC-SHA256 signature.
+ */
 export function signPayload(secret: string, body: string): string {
   return createHmac("sha256", secret).update(body, "utf8").digest("hex");
 }
 
+/**
+ * Verify a webhook payload signature using a timing-safe comparison.
+ *
+ * @param secret    Webhook secret used to sign the payload.
+ * @param body      Raw request body string received from the sender.
+ * @param signature Hex signature from the `X-SorobanIdentity-Signature` header.
+ * @returns `true` if the signature is valid; `false` otherwise.
+ */
 export function verifySignature(secret: string, body: string, signature: string): boolean {
   if (typeof signature !== "string") return false;
   const expected = signPayload(secret, body);
@@ -167,7 +211,25 @@ function backoffMs(attempt: number, base: number, max: number, jitter: number): 
   return Math.floor(grown * (1 + jitter));
 }
 
+/**
+ * Signs and delivers webhook payloads with exponential-backoff retry.
+ *
+ * Each delivery attempt POSTs a JSON body to the registered URL, signed with
+ * HMAC-SHA256 under the registration secret. Transient failures (5xx, 429,
+ * network errors) are retried up to `maxAttempts` times. Client errors (4xx
+ * except 429) fast-fail immediately.
+ *
+ * @example
+ * ```ts
+ * const dispatcher = new WebhookDispatcher({ maxAttempts: 3 });
+ * const result = await dispatcher.deliver(registration, 'credential.issued', payload);
+ * if (!result.ok) console.error('delivery failed', result.attempts);
+ * ```
+ */
 export class WebhookDispatcher {
+  /**
+   * @param options Retry budget, delay, sleep, fetch, and jitter overrides.
+   */
   constructor(private readonly options: DeliverOptions = {}) {}
 
   async deliver(

@@ -1,21 +1,33 @@
 import { SorobanRpc, Contract, xdr, scValToNative } from '@stellar/stellar-sdk';
 
+/** Filter applied to an event subscription or one-shot query. */
 export interface EventFilter {
+  /** Topic filter — single topic array or matrix of OR-able topics. */
   topic?: string[] | string[][];
+  /** Restrict results to events from this contract ID. */
   contractId?: string;
 }
 
+/** Decoded Soroban contract event returned by {@link getEvents} or the listener callback. */
 export interface ContractEvent {
   type: string;
+  /** Stellar contract ID that emitted this event. */
   contractId: string;
+  /** JSON-serialised topic values. */
   topic: string[];
+  /** Decoded event payload. */
   value: Record<string, unknown>;
+  /** Ledger sequence number the event was emitted in. */
   ledger: number;
+  /** Transaction hash of the transaction that produced this event. */
   txHash: string;
 }
 
+/** Options for a one-shot historical event query via {@link getEvents}. */
 export interface GetEventsOptions {
+  /** Soroban RPC URL to query. */
   rpcUrl: string;
+  /** Contract whose events to fetch. */
   contractId: string;
   /** Ledger to start scanning from. Omit to start from the oldest available. */
   startLedger?: number;
@@ -25,14 +37,19 @@ export interface GetEventsOptions {
 }
 
 /**
- * One-shot fetch of historical contract events via the Soroban RPC getEvents
- * endpoint. For real-time updates use SorobanEventListener instead.
+ * One-shot fetch of historical contract events via the Soroban RPC `getEvents`
+ * endpoint.
  *
- * Event indexing strategy:
- *   - For lightweight queries: call this utility with a known startLedger.
- *   - For production indexing: consider the Mercury indexer for Soroban
- *     (https://mercurydata.app) or run a custom listener that checkpoints
- *     the last processed ledger and pages forward on each invocation.
+ * For real-time updates use {@link SorobanEventListener} instead.
+ *
+ * **Indexing strategy:** For lightweight queries, call this utility with a
+ * known `startLedger`. For production indexing, consider checkpointing the
+ * last processed ledger and paging forward on each invocation.
+ *
+ * @param options Query parameters — RPC URL, contract, ledger range, and filter.
+ * @returns Array of decoded {@link ContractEvent} records. Empty when no events
+ *   match.
+ * @throws If the RPC request fails.
  */
 export async function getEvents(options: GetEventsOptions): Promise<ContractEvent[]> {
   const { rpcUrl, contractId, startLedger, limit = 100, filter } = options;
@@ -83,6 +100,23 @@ function parseRawEvent(event: SorobanRpc.Api.EventResponse): ContractEvent | nul
   }
 }
 
+/**
+ * Long-running, polling-based listener for real-time Soroban contract events.
+ *
+ * Polls the RPC `getEvents` endpoint at a configurable interval and delivers
+ * new events to a callback. Tracks the last seen ledger so each poll returns
+ * only fresh events.
+ *
+ * @example
+ * ```ts
+ * const listener = new SorobanEventListener(rpcUrl, contractId, {
+ *   topic: ['credential', 'issued'],
+ * });
+ * listener.start((events) => console.log(events));
+ * // later...
+ * listener.stop();
+ * ```
+ */
 export class SorobanEventListener {
   private server: SorobanRpc.Server;
   private contractId: string;
@@ -91,6 +125,11 @@ export class SorobanEventListener {
   private intervalId?: ReturnType<typeof setInterval>;
   private lastLedger = 0;
 
+  /**
+   * @param rpcUrl     Soroban RPC endpoint URL.
+   * @param contractId Contract whose events to subscribe to.
+   * @param filter     Optional topic / contract-ID filter applied to each poll.
+   */
   constructor(rpcUrl: string, contractId: string, filter?: EventFilter) {
     this.server = new SorobanRpc.Server(rpcUrl);
     this.contractId = contractId;

@@ -33,6 +33,12 @@ export interface ApiKeyStore {
   touch(id: string, at: number): Promise<void>;
 }
 
+/**
+ * In-process {@link ApiKeyStore} backed by plain `Map`s.
+ *
+ * Suitable for single-process deployments and tests. Swap for a database-backed
+ * implementation in multi-node production environments.
+ */
 export class InMemoryApiKeyStore implements ApiKeyStore {
   private readonly byId = new Map<string, ApiKeyRecord>();
   private readonly byHash = new Map<string, string>();
@@ -71,6 +77,12 @@ export class InMemoryApiKeyStore implements ApiKeyStore {
   }
 }
 
+/**
+ * Compute the SHA-256 hex digest of a raw API key for at-rest storage.
+ *
+ * @param rawKey The plaintext key string as returned at issuance.
+ * @returns 64-character lowercase hex SHA-256 hash.
+ */
 export function hashApiKey(rawKey: string): string {
   return createHash("sha256").update(rawKey, "utf8").digest("hex");
 }
@@ -92,6 +104,26 @@ export interface IssueApiKeyOptions {
   idFn?: () => string;
 }
 
+/**
+ * Issue a new API key and persist it (hashed) in `store`.
+ *
+ * The raw key is returned ONCE and never stored. Callers must pass it to the
+ * API consumer immediately — it cannot be recovered.
+ *
+ * @param store   Backing store to persist the hashed record.
+ * @param options Owner, scope, and optional overrides for ID / clock / random source.
+ * @returns The raw key and its metadata.
+ * @throws {SorobanIdentityError} with code `ALREADY_EXISTS` if the generated
+ *   ID collides with an existing record.
+ *
+ * @example
+ * ```ts
+ * const { rawKey, metadata } = await issueApiKey(store, {
+ *   owner: 'alice',
+ *   scopes: ['read', 'write'],
+ * });
+ * ```
+ */
 export async function issueApiKey(
   store: ApiKeyStore,
   options: IssueApiKeyOptions,
@@ -115,6 +147,15 @@ export async function issueApiKey(
   };
 }
 
+/**
+ * Extract the bearer token from an `Authorization` header value.
+ *
+ * Returns `undefined` if the header is absent, malformed, or the token is
+ * empty after stripping the `Bearer ` prefix.
+ *
+ * @param header Raw `Authorization` header value (e.g. `"Bearer sk_abc123"`).
+ * @returns The raw API key string, or `undefined`.
+ */
 export function parseAuthorizationHeader(header: string | undefined): string | undefined {
   if (!header) return undefined;
   const trimmed = header.trim();
@@ -151,6 +192,22 @@ type ResLike = {
 };
 type NextLike = (err?: unknown) => void;
 
+/**
+ * Create an Express-compatible `Authorization: Bearer` authentication middleware.
+ *
+ * Validates the incoming API key against `options.store`, optionally enforces a
+ * required scope, touches `lastUsedAt`, and attaches `req.auth = { apiKey }`
+ * for downstream handlers.
+ *
+ * @param options Store, clock override, and optional required scope.
+ * @returns Async middleware function `(req, res, next) => void`.
+ * @throws Never — authentication failures are expressed as `401` JSON responses.
+ *
+ * @example
+ * ```ts
+ * app.use('/api/write', createApiKeyAuthMiddleware({ store, requireScope: 'write' }));
+ * ```
+ */
 export function createApiKeyAuthMiddleware(options: ApiKeyMiddlewareOptions) {
   const now = options.now ?? Date.now;
   return async function apiKeyAuth(req: ReqLike, res: ResLike, next: NextLike): Promise<void> {

@@ -7,9 +7,9 @@ import {
   scValToNative,
   Account,
 } from "@stellar/stellar-sdk";
-import type { CallOptions, DidDocument, IdentityStorageStats, SorobanIdentityConfig, WriteResult } from "./types";
+import type { CallOptions, DidDocument, IdentityStorageStats, SorobanIdentityConfig, SorobanResponse, WriteResult } from "./types";
 import { validateConfig } from "./types";
-import { retryWithBackoff, validateStellarAddress, pollTransactionStatus } from "./utils";
+import { retryWithBackoff, validateStellarAddress, pollTransactionStatus, runConcurrent } from "./utils";
 import { ContractError, SorobanIdentityError } from "./errors";
 import { IDENTITY_REGISTRY_ERRORS } from "./error-codes";
 import { BaseClient } from "./base-client";
@@ -107,7 +107,7 @@ export class IdentityClient extends BaseClient {
     keypair: Keypair,
     metadata: Record<string, string> = {},
     options?: CallOptions
-  ): Promise<{ did: string } & WriteResult> {
+  ): Promise<SorobanResponse<{ did: string } & WriteResult>> {
     const account = await this.server.getAccount(keypair.publicKey());
 
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
@@ -136,15 +136,16 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
+    const txHash = result.hash;
     try {
-      await pollTransactionStatus(this.server, result.hash, {
+      await pollTransactionStatus(this.server, txHash, {
         maxAttempts: this.config.pollingRetries,
         intervalMs: this.config.pollingIntervalMs,
         exponentialBackoff: this.config.pollingExponentialBackoff,
       });
-      const confirmed = await this.server.getTransaction(result.hash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
+      const confirmed = await this.server.getTransaction(txHash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
       const did = scValToNative(confirmed.returnValue!) as string;
-      return { did, estimatedFee, estimatedFeeXlm };
+      return { data: { did, estimatedFee, estimatedFeeXlm }, txHash };
     } catch (e: unknown) {
       if (e instanceof SorobanIdentityError && e.code === "TIMEOUT") throw e;
       const msg = e instanceof Error ? e.message : String(e);
@@ -176,7 +177,7 @@ export class IdentityClient extends BaseClient {
     keypair: Keypair,
     metadata: Record<string, string>,
     options?: CallOptions
-  ): Promise<void> {
+  ): Promise<SorobanResponse<void>> {
     const account = await this.server.getAccount(keypair.publicKey());
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
@@ -202,8 +203,9 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
+    const txHash = result.hash;
     try {
-      await pollTransactionStatus(this.server, result.hash, {
+      await pollTransactionStatus(this.server, txHash, {
         maxAttempts: this.config.pollingRetries,
         intervalMs: this.config.pollingIntervalMs,
         exponentialBackoff: this.config.pollingExponentialBackoff,
@@ -225,6 +227,7 @@ export class IdentityClient extends BaseClient {
       }
       throw e;
     }
+    return { data: undefined, txHash };
   }
 
   /**
@@ -368,7 +371,7 @@ export class IdentityClient extends BaseClient {
    *   exist or is already inactive, or `CONTRACT_ERROR` for other submission
    *   failures.
    */
-  async deactivateDid(keypair: Keypair): Promise<void> {
+  async deactivateDid(keypair: Keypair): Promise<SorobanResponse<void>> {
     const isActive = await this.hasActiveDid(keypair.publicKey());
     if (!isActive) {
       throw new SorobanIdentityError(
@@ -401,11 +404,13 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
-    await pollTransactionStatus(this.server, result.hash, {
+    const txHash = result.hash;
+    await pollTransactionStatus(this.server, txHash, {
       maxAttempts: this.config.pollingRetries,
       intervalMs: this.config.pollingIntervalMs,
       exponentialBackoff: this.config.pollingExponentialBackoff,
     });
+    return { data: undefined, txHash };
   }
 
   /**
@@ -416,6 +421,57 @@ export class IdentityClient extends BaseClient {
    * @returns The current {@link IdentityStorageStats}.
    * @throws {SorobanIdentityError} on simulation failure.
    */
+  /**
+   * List DID documents with offset-based pagination.
+   *
+   * @param callerAddress Stellar address used to build the read simulation.
+   * @param page          1-based page number. Defaults to `1`.
+   * @param pageSize      Number of records per page. Defaults to `20`, capped
+   *                      to `100` server-side.
+   * @param options       Per-call overrides (currently `timeoutSeconds`).
+   * @returns Array of {@link DidDocument} for the requested page.
+   * @throws {SorobanIdentityError} on simulation failure.
+   */
+  async listDIDs(
+    callerAddress: string,
+    page = 1,
+    pageSize = 20,
+    options?: CallOptions
+  ): Promise<DidDocument[]> {
+    validateStellarAddress(callerAddress);
+    const account = new Account(callerAddress, "0");
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const offset = (Math.max(1, page) - 1) * pageSize;
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          "list_dids",
+          nativeToScVal(offset, { type: "u32" }),
+          nativeToScVal(pageSize, { type: "u32" })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
+    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+    this.debug('sdk.simulation_result', { operation: 'identity.listDIDs', success: !isSimulationError });
+    if (isSimulationError) {
+      const errMsg = result.error ?? "";
+      const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
+      if (contractErr) throw contractErr;
+      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, "CONTRACT_ERROR");
+    }
+
+    return scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    ) as DidDocument[];
+  }
+
   async getStorageStats(callerAddress: string, options?: CallOptions): Promise<IdentityStorageStats> {
     validateStellarAddress(callerAddress);
     const account = new Account(callerAddress, "0");
@@ -442,6 +498,30 @@ export class IdentityClient extends BaseClient {
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as IdentityStorageStats;
+  }
+
+  /**
+   * Resolve multiple DID documents in parallel.
+   *
+   * Runs up to `concurrency` (default: `config.maxConcurrentRequests ?? 5`)
+   * simulate calls simultaneously. Results are returned in the same order as
+   * `addresses`.
+   *
+   * @param addresses   Controller addresses to resolve.
+   * @param options     Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link DidDocument} in input order.
+   * @throws {SorobanIdentityError} if any individual resolution fails.
+   */
+  async resolveMany(
+    addresses: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<DidDocument[]> {
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      addresses,
+      (address) => this.resolveDid(address, options),
+      concurrency
+    );
   }
 
   /**

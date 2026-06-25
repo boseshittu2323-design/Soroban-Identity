@@ -14,6 +14,7 @@ import type {
   PaginationOptions,
   ReputationStorageStats,
   SorobanIdentityConfig,
+  SorobanResponse,
   WriteResult,
 } from './types';
 import { validateConfig } from './types';
@@ -21,6 +22,7 @@ import {
   retryWithBackoff,
   validateStellarAddress,
   pollTransactionStatus,
+  runConcurrent,
 } from './utils';
 import { SorobanTransactionBuilder } from './transaction-builder';
 import { ContractError, SorobanIdentityError } from "./errors";
@@ -72,6 +74,7 @@ export class ReputationClient extends BaseClient {
    * @param config SDK config including the deployed reputation contract ID.
    */
   constructor(config: SorobanIdentityConfig) {
+    validateConfig(config, { contractIdField: 'reputationId' });
     super(config, config.reputationId);
   }
 
@@ -369,7 +372,7 @@ export class ReputationClient extends BaseClient {
       .addOperation(
         this.contract.call(
           'passes_sybil_check',
-          ...buildPassesSybilCheckArgs({ subject: subjectAddress, minScore, minReporters })
+          ...buildPassesSybilCheckArgs({ subject: subjectAddress, minScore: BigInt(minScore), minReporters })
         )
       )
       .setTimeout(timeout)
@@ -408,7 +411,7 @@ export class ReputationClient extends BaseClient {
     delta: number,
     reason: string,
     options?: CallOptions
-  ): Promise<WriteResult> {
+  ): Promise<SorobanResponse<WriteResult>> {
     const account = await this.server.getAccount(reporterKeypair.publicKey());
     const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
@@ -420,7 +423,7 @@ export class ReputationClient extends BaseClient {
       ...buildSubmitScoreArgs({
         reporter: reporterKeypair.publicKey(),
         subject: subjectAddress,
-        delta,
+        delta: BigInt(delta),
         reason,
       })
     );
@@ -442,17 +445,41 @@ export class ReputationClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, 'CONTRACT_ERROR');
     }
 
-    try {
-      await pollTransactionStatus(this.server, result.hash, {
-        maxAttempts: this.config.pollingRetries,
-        intervalMs: this.config.pollingIntervalMs,
-        exponentialBackoff: this.config.pollingExponentialBackoff,
-      });
-    } catch (e: unknown) {
-      if (e instanceof SorobanIdentityError && e.code === "TIMEOUT") throw e;
-      throw e;
-    }
-    return { estimatedFee, estimatedFeeXlm };
+    const txHash = result.hash;
+    await pollTransactionStatus(this.server, txHash, {
+      maxAttempts: this.config.pollingRetries,
+      intervalMs: this.config.pollingIntervalMs,
+      exponentialBackoff: this.config.pollingExponentialBackoff,
+    });
+    return { data: { estimatedFee, estimatedFeeXlm }, txHash };
+  }
+
+  /**
+   * Fetch reputation records for multiple addresses in parallel.
+   *
+   * Useful for leaderboard views that need scores for N subjects without N
+   * sequential round-trips. Runs up to `concurrency`
+   * (default: `config.maxConcurrentRequests ?? 5`) simulate calls at a time.
+   * Results are returned in the same order as `addresses`.
+   *
+   * @param callerAddress Stellar address used to build the read simulations.
+   * @param addresses     Subject addresses to look up.
+   * @param options       Per-call overrides; `concurrency` caps parallel RPC calls.
+   * @returns Array of {@link ReputationRecord} in input order. Addresses with no
+   *          record return a zero record (`score: 0, reporterCount: 0, updatedAt: 0`).
+   */
+  async getScores(
+    callerAddress: string,
+    addresses: string[],
+    options?: CallOptions & { concurrency?: number }
+  ): Promise<ReputationRecord[]> {
+    validateStellarAddress(callerAddress);
+    const concurrency = options?.concurrency ?? this.config.maxConcurrentRequests ?? 5;
+    return runConcurrent(
+      addresses,
+      (address) => this.getReputation(callerAddress, address, options),
+      concurrency
+    );
   }
 
   /**
@@ -573,6 +600,29 @@ export class ReputationClient extends BaseClient {
    * @throws {SorobanIdentityError} on simulation failure (network or contract error,
    *         including `ReporterNotFound` when the reporter is not registered).
    */
+  /**
+   * Get the current numeric score for a subject.
+   *
+   * Convenience wrapper around {@link ReputationClient.getReputation} that
+   * returns only the score field. Use this when you only need the number and
+   * don't want to carry the full record.
+   *
+   * @param callerAddress  Stellar address used to build the read simulation.
+   * @param subjectAddress The subject whose score to retrieve.
+   * @param options        Per-call overrides (currently `timeoutSeconds`).
+   * @returns The subject's current accumulated score (0 when no record exists).
+   * @throws {SorobanIdentityError} on simulation failure unrelated to a
+   *   missing record.
+   */
+  async getScore(
+    callerAddress: string,
+    subjectAddress: string,
+    options?: CallOptions
+  ): Promise<number> {
+    const record = await this.getReputation(callerAddress, subjectAddress, options);
+    return record.score;
+  }
+
   async listScoreHistory(
     callerAddress: string,
     subjectAddress: string,

@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
-    Map, String, Symbol,
+    Map, String, Symbol, Vec,
 };
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -52,6 +52,18 @@ pub struct IdentityStorageStats {
     pub active_dids: u32,
 }
 
+/// W3C DID Core service endpoint entry (optional field on {@link DidDocument}).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceEndpoint {
+    /// URI identifying this service endpoint (e.g. `did:stellar:…#messaging`).
+    pub id: String,
+    /// Service type (e.g. `DIDCommMessaging`, `CredentialService`).
+    pub type_: String,
+    /// URL or URI where the service can be reached.
+    pub service_endpoint: String,
+}
+
 /// W3C-aligned DID document stored on-chain.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +80,8 @@ pub struct DidDocument {
     pub updated_at: u64,
     /// Whether this DID is active
     pub active: bool,
+    /// W3C DID Core optional service endpoints (empty by default).
+    pub services: Vec<ServiceEndpoint>,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -215,6 +229,7 @@ impl IdentityRegistry {
             created_at: now,
             updated_at: now,
             active: true,
+            services: Vec::new(&env),
         };
 
         storage.set(&key, &doc);

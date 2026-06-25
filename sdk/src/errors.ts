@@ -18,6 +18,7 @@ export type SorobanErrorCode =
   | "ALREADY_EXISTS"
   | "INVALID_INPUT"
   | "NETWORK_ERROR"
+  | "TIMEOUT"
   | "CONTRACT_ERROR"
   | "RATE_LIMITED"
   | "VALIDATION_ERROR"
@@ -28,6 +29,8 @@ export interface SorobanIdentityErrorInit {
   code?: SorobanErrorCode;
   details?: Record<string, unknown>;
   originalError?: unknown;
+  /** Transaction hash when the failure is tied to an on-chain submission. */
+  txHash?: string;
 }
 
 function isInitObject(v: unknown): v is SorobanIdentityErrorInit {
@@ -55,12 +58,14 @@ export class SorobanIdentityError extends Error {
   readonly details?: Record<string, unknown>;
   /** The underlying error, if this wraps one. */
   readonly originalError?: unknown;
+  /** Transaction hash when the failure is tied to an on-chain submission. */
+  readonly txHash?: string;
 
   /**
    * Backwards-compatible positional signature:
    *   `new SorobanIdentityError(msg, codeString, originalError)`.
    * Init-object signature:
-   *   `new SorobanIdentityError(msg, { code, details, originalError })`.
+   *   `new SorobanIdentityError(msg, { code, details, originalError, txHash })`.
    *
    * @param message       Human-readable error message.
    * @param codeOrInit    {@link SorobanErrorCode} or init object. Defaults to `'UNKNOWN'`.
@@ -77,18 +82,50 @@ export class SorobanIdentityError extends Error {
       this.code = codeOrInit.code ?? "UNKNOWN";
       this.details = codeOrInit.details;
       this.originalError = codeOrInit.originalError ?? originalError;
+      this.txHash = codeOrInit.txHash;
     } else {
       this.code = codeOrInit;
       this.originalError = originalError;
     }
   }
 
-  toEnvelope(): { code: SorobanErrorCode; message: string; details?: Record<string, unknown> } {
+  toEnvelope(): { code: SorobanErrorCode; message: string; details?: Record<string, unknown>; txHash?: string } {
     return {
       code: this.code,
       message: this.message,
       ...(this.details ? { details: this.details } : {}),
+      ...(this.txHash ? { txHash: this.txHash } : {}),
     };
+  }
+}
+
+/**
+ * Thrown when the RPC provider responds with HTTP 429 and the SDK has
+ * exhausted its retry budget. Consumers should honour `retryAfterMs`
+ * before re-submitting the request.
+ *
+ * @example
+ * ```ts
+ * import { RateLimitError } from '@soroban-identity/sdk';
+ * try {
+ *   await identity.resolveDid(address);
+ * } catch (err) {
+ *   if (err instanceof RateLimitError) {
+ *     await sleep(err.retryAfterMs);
+ *     // retry…
+ *   }
+ * }
+ * ```
+ */
+export class RateLimitError extends Error {
+  /** Milliseconds to wait before the next request attempt. */
+  readonly retryAfterMs: number;
+  readonly code: SorobanErrorCode = "RATE_LIMITED";
+
+  constructor(retryAfterMs: number) {
+    super(`Rate limited — retry after ${retryAfterMs}ms`);
+    this.name = "RateLimitError";
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -140,6 +177,26 @@ export class ContractError extends Error {
 }
 
 /**
+ * Thrown by {@link CredentialClient.issueCredential} when a `schemaId` is
+ * supplied and the provided `claims` fail validation against the on-chain
+ * schema.
+ *
+ * `fieldErrors` maps each failing claim key to a human-readable message so
+ * callers can surface actionable feedback.
+ */
+export class ClaimsValidationError extends Error {
+  readonly code = "INVALID_INPUT" as const;
+  /** Per-field validation messages — key is the claim field path. */
+  readonly fieldErrors: Record<string, string>;
+
+  constructor(message: string, fieldErrors: Record<string, string>) {
+    super(message);
+    this.name = "ClaimsValidationError";
+    this.fieldErrors = fieldErrors;
+  }
+}
+
+/**
  * Map a free-form error message (panic string, RPC error message,
  * etc.) to the envelope code. Falls back to `UNKNOWN` so call sites
  * can wrap-and-rethrow without case explosion.
@@ -151,7 +208,8 @@ export function classifyError(message: string): SorobanErrorCode {
   if (/unauthori[sz]ed|forbidden|permission denied/u.test(m)) return "UNAUTHORIZED";
   if (/rate limit|too many requests/u.test(m)) return "RATE_LIMITED";
   if (/invalid|malformed|bad request|missing/u.test(m)) return "INVALID_INPUT";
-  if (/timeout|econnrefused|enotfound|network|fetch failed/u.test(m)) return "NETWORK_ERROR";
+  if (/timed?\s*out|timeout/u.test(m)) return "TIMEOUT";
+  if (/econnrefused|enotfound|network|fetch failed/u.test(m)) return "NETWORK_ERROR";
   if (/#\d+/.test(m)) return "CONTRACT_ERROR";
   return "UNKNOWN";
 }

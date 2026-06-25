@@ -10,6 +10,13 @@ export interface HealthCheckResult {
   allHealthy: boolean;
 }
 
+/** Compact liveness result returned by {@link health}. */
+export interface HealthResult {
+  identity: boolean;
+  credentials: boolean;
+  reputation: boolean;
+}
+
 /**
  * Pre-flight health check that pings all three deployed contracts.
  *
@@ -30,6 +37,32 @@ export interface HealthCheckResult {
  * if (!allHealthy) throw new Error('One or more contracts are not reachable');
  * ```
  */
+/**
+ * Ping all three deployed contracts and return compact liveness flags.
+ *
+ * Calls the read-only `ping()` function on each contract in parallel.
+ * A contract is considered unhealthy if its `ping()` throws for any reason.
+ *
+ * @example
+ * ```ts
+ * const { identity, credentials, reputation } = await health(config);
+ * if (!identity) throw new Error('Identity contract unreachable');
+ * ```
+ */
+export async function health(config: SorobanIdentityConfig): Promise<HealthResult> {
+  const [identityResult, credentialResult, reputationResult] = await Promise.allSettled([
+    new IdentityClient(config).ping(),
+    new CredentialClient(config).ping(),
+    new ReputationClient(config).ping(),
+  ]);
+
+  return {
+    identity: identityResult.status === 'fulfilled',
+    credentials: credentialResult.status === 'fulfilled',
+    reputation: reputationResult.status === 'fulfilled',
+  };
+}
+
 export async function healthCheck(config: SorobanIdentityConfig): Promise<HealthCheckResult> {
   const [identityResult, credentialResult, reputationResult] = await Promise.allSettled([
     new IdentityClient(config).ping(),

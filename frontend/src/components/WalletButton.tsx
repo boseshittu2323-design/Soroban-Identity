@@ -1,9 +1,9 @@
 import { useState } from "react";
-import type { WalletState, WalletType } from "../hooks/useWallet";
+import type { WalletType } from "../hooks/useWallet";
 import { useWalletContext } from "../context/WalletContext";
 
 export default function WalletButton() {
-  const wallet = useWalletContext();
+  const { connected, publicKey, connecting, txLoading, error, walletType, connect, disconnect } = useWalletContext();
   const [showPicker, setShowPicker] = useState(false);
 
   const short = (key: string) => `${key.slice(0, 4)}…${key.slice(-4)}`;
@@ -78,14 +78,17 @@ export default function WalletButton() {
 
       {error && (
         <span style={{ fontSize: "0.75rem", color: "var(--error-text)" }}>
-          {error.toLowerCase().includes("freighter not found") ? (
-            <>Freighter not installed.{" "}
-              <a href="https://freighter.app" target="_blank" rel="noopener noreferrer"
-                style={{ color: "var(--accent-light)", textDecoration: "underline" }}>
-                Install it here
-              </a>
-            </>
-          ) : error}
+          {(() => {
+            const msg = error instanceof Error ? error.message : typeof error === "string" && error ? error : "Wallet connection failed. Please try again.";
+            return msg.toLowerCase().includes("freighter not found") ? (
+              <>Freighter not installed.{" "}
+                <a href="https://freighter.app" target="_blank" rel="noopener noreferrer"
+                  style={{ color: "var(--accent-light)", textDecoration: "underline" }}>
+                  Install it here
+                </a>
+              </>
+            ) : msg;
+          })()}
         </span>
       )}
     </div>

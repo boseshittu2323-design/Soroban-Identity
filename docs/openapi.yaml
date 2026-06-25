@@ -52,6 +52,31 @@ paths:
                   status: { type: string, example: ok }
 
   /identity/dids:
+    get:
+      tags: [identity]
+      summary: List all registered DID documents (offset-paginated).
+      x-soroban-contract:
+        contract: identity-registry
+        function: list_dids
+      parameters:
+        - { in: query, name: page, schema: { type: integer, default: 1 }, description: 1-based page number. }
+        - { in: query, name: pageSize, schema: { type: integer, default: 20, maximum: 100 }, description: Records per page, capped at 100 server-side. }
+      responses:
+        '200':
+          description: Page of DID documents.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids:
+                    type: array
+                    items: { $ref: '#/components/schemas/DidDocument' }
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      pageSize: { type: integer }
     post:
       tags: [identity]
       summary: Create a new DID.
@@ -80,9 +105,15 @@ paths:
               schema:
                 type: object
                 properties:
-                  did: { type: string, example: 'did:stellar:GABC...' }
-                  estimatedFee: { type: integer }
-                  estimatedFeeXlm: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      did: { type: string, example: 'did:stellar:GABC...' }
+                      estimatedFee: { type: integer }
+                      estimatedFeeXlm: { type: string }
+                  txHash:
+                    type: string
+                    description: On-chain transaction hash for auditing (#296).
         '400':
           description: A DID already exists for this controller.
           content:
@@ -127,8 +158,16 @@ paths:
                   type: object
                   additionalProperties: { type: string }
       responses:
-        '204':
+        '200':
           description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txHash:
+                    type: string
+                    description: On-chain transaction hash for auditing (#296).
         '404':
           description: No DID exists for `controller`.
           content:
@@ -146,8 +185,16 @@ paths:
         contract: identity-registry
         function: deactivate_did
       responses:
-        '204':
+        '200':
           description: Deactivated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txHash:
+                    type: string
+                    description: On-chain transaction hash for auditing (#296).
         '404':
           description: No active DID for `controller`.
           content:
@@ -204,6 +251,19 @@ paths:
                 expiresAt:
                   type: integer
                   description: Unix timestamp. 0 = no expiry.
+                nonce:
+                  type: string
+                  description: |
+                    Optional idempotency key (#295). When provided, the nonce is
+                    mixed into the credential ID derivation so retrying with the
+                    same nonce is a no-op if the credential already exists.
+                schemaId:
+                  type: string
+                  format: uri
+                  description: |
+                    Optional URI of a JSON Schema to validate `claims` against
+                    before submission (#298). Throws `ClaimsValidationError`
+                    with field-level detail on failure.
       responses:
         '201':
           description: Credential issued.
@@ -212,11 +272,17 @@ paths:
               schema:
                 type: object
                 properties:
-                  credentialId: { type: string }
-                  estimatedFee: { type: integer }
-                  estimatedFeeXlm: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      credentialId: { type: string }
+                      estimatedFee: { type: integer }
+                      estimatedFeeXlm: { type: string }
+                  txHash:
+                    type: string
+                    description: On-chain transaction hash for auditing (#296).
         '400':
-          description: Malformed claims hash or signature.
+          description: Malformed claims hash, signature, or claims failed schema validation.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -411,8 +477,14 @@ paths:
               schema:
                 type: object
                 properties:
-                  estimatedFee: { type: integer }
-                  estimatedFeeXlm: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      estimatedFee: { type: integer }
+                      estimatedFeeXlm: { type: string }
+                  txHash:
+                    type: string
+                    description: On-chain transaction hash for auditing (#296).
         '401':
           description: Reporter is not registered.
           content:
@@ -433,7 +505,18 @@ components:
         error: { type: string }
         code:
           type: string
-          enum: [NOT_FOUND, UNAUTHORIZED, NETWORK_ERROR, VALIDATION_ERROR, CONTRACT_ERROR, UNKNOWN]
+          enum: [NOT_FOUND, UNAUTHORIZED, NETWORK_ERROR, VALIDATION_ERROR, CONTRACT_ERROR, INVALID_INPUT, UNKNOWN]
+    ClaimsValidationError:
+      type: object
+      required: [error, code, fieldErrors]
+      description: Thrown when claims fail JSON Schema validation (#298).
+      properties:
+        error: { type: string }
+        code: { type: string, enum: [INVALID_INPUT] }
+        fieldErrors:
+          type: object
+          additionalProperties: { type: string }
+          description: Per-field validation messages keyed by claim field path.
     CredentialType:
       type: string
       enum: [Kyc, Reputation, Achievement, Custom]
