@@ -261,7 +261,7 @@ export class CredentialClient extends BaseClient {
             claims,
             claimsHash: Buffer.from(claimsHashHex, "hex"),
             signature: Buffer.from(signature),
-            expiresAt,
+            expiresAt: BigInt(expiresAt),
           })
         )
       )
