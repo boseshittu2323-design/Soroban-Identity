@@ -21,6 +21,7 @@ export type SorobanErrorCode =
   | "CONTRACT_ERROR"
   | "RATE_LIMITED"
   | "VALIDATION_ERROR"
+  | "TIMEOUT"
   | "UNKNOWN";
 
 export interface SorobanIdentityErrorInit {

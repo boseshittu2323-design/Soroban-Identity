@@ -18,10 +18,15 @@ pub enum ContractError {
     Unauthorized = 6,
     DidAlreadyExists = 7,
     NotInitialized = 8,
+    MetadataTooLarge = 9,
 }
 
 /// Version returned by `ping` for deployment health checks.
 pub const CONTRACT_VERSION: u32 = 1;
+
+/// Schema version stamped on every emitted event. Increment on breaking schema changes
+/// so indexers can distinguish old from new event formats without silent breakage.
+const EVENT_VERSION: u32 = 1;
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -96,7 +101,7 @@ impl IdentityRegistry {
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         Self::require_uninitialized(&env)?;
         Self::set_admin(&env, &admin);
-        env.events().publish((ADMIN, symbol_short!("init")), admin);
+        env.events().publish((ADMIN, symbol_short!("init")), (EVENT_VERSION, admin));
         Ok(())
     }
 
@@ -126,7 +131,7 @@ impl IdentityRegistry {
         env.storage().instance().set(&ADMIN, &new_admin);
         env.events().publish(
             (ADMIN, symbol_short!("transfer")),
-            (current_admin, new_admin),
+            (EVENT_VERSION, current_admin, new_admin),
         );
         Ok(())
     }
@@ -222,7 +227,7 @@ impl IdentityRegistry {
         env.storage().instance().set(&TOTAL_DIDS, &(total + 1));
 
         env.events()
-            .publish((IDENTITY, symbol_short!("created")), (controller, now));
+            .publish((IDENTITY, symbol_short!("created")), (EVENT_VERSION, controller, now));
 
         Ok(did_id)
     }
@@ -275,7 +280,7 @@ impl IdentityRegistry {
         let meta_hash = env.crypto().sha256(&hash_input).to_bytes();
         env.events().publish(
             (IDENTITY, symbol_short!("updated")),
-            (controller, meta_hash),
+            (EVENT_VERSION, controller, meta_hash),
         );
         Ok(())
     }
@@ -313,7 +318,7 @@ impl IdentityRegistry {
 
         env.events().publish(
             (IDENTITY, symbol_short!("deact")),
-            (controller, doc.updated_at),
+            (EVENT_VERSION, controller, doc.updated_at),
         );
         Ok(())
     }
@@ -405,6 +410,9 @@ impl IdentityRegistry {
     }
 
     fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError> {
+        if metadata.len() > 10 {
+            return Err(ContractError::MetadataTooLarge);
+        }
         for (k, v) in metadata.iter() {
             if k.len() > 64 || v.len() > 256 {
                 return Err(ContractError::MetadataTooLong);

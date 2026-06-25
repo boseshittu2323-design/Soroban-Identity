@@ -38,8 +38,16 @@ pub enum ContractError {
     Unauthorized = 6,
 }
 
+/// Schema version stamped on every emitted event. Increment on breaking schema changes
+/// so indexers can distinguish old from new event formats without silent breakage.
+const EVENT_VERSION: u32 = 1;
+
 /// Minimum ledger interval between submissions from the same reporter for the same subject.
 const MIN_INTERVAL: u32 = 100;
+
+/// Floor value for accumulated reputation scores. Scores are clamped to this
+/// minimum after every delta application so they never go unboundedly negative.
+const MIN_SCORE: i64 = 0;
 
 /// Max TTL for reputation records (~1 year)
 const TTL_MAX: u32 = 6_312_000;
@@ -141,7 +149,7 @@ impl Reputation {
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         Self::require_uninitialized(&env)?;
         Self::set_admin(&env, &admin);
-        env.events().publish((ADMIN, symbol_short!("init")), admin);
+        env.events().publish((ADMIN, symbol_short!("init")), (EVENT_VERSION, admin));
         Ok(())
     }
 
@@ -171,7 +179,7 @@ impl Reputation {
         env.storage().instance().set(&ADMIN, &new_admin);
         env.events().publish(
             (ADMIN, symbol_short!("transfer")),
-            (current_admin, new_admin),
+            (EVENT_VERSION, current_admin, new_admin),
         );
         Ok(())
     }
@@ -211,7 +219,7 @@ impl Reputation {
             env.storage().instance().set(&REPORTER, &reporters);
             env.events().publish(
                 (REPORTER, symbol_short!("added")),
-                (reporter, env.ledger().timestamp()),
+                (EVENT_VERSION, reporter, env.ledger().timestamp()),
             );
         }
         Ok(())
@@ -238,7 +246,7 @@ impl Reputation {
         env.storage().instance().set(&REPORTER, &updated);
         env.events().publish(
             (REPORTER, symbol_short!("removed")),
-            (reporter, env.ledger().timestamp()),
+            (EVENT_VERSION, reporter, env.ledger().timestamp()),
         );
         Ok(())
     }
@@ -372,7 +380,7 @@ impl Reputation {
             updated_at: now,
         });
 
-        record.score = record.score.saturating_add(delta).max(0);
+        record.score = record.score.saturating_add(delta).max(MIN_SCORE);
         record.updated_at = now;
 
         // Track whether this reporter is new for this subject
@@ -417,7 +425,7 @@ impl Reputation {
 
         env.events().publish(
             (symbol_short!("SCORE"), symbol_short!("updated")),
-            (reporter, subject, delta),
+            (EVENT_VERSION, reporter, subject, delta),
         );
 
         Ok(())

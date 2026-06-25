@@ -53,7 +53,7 @@ export async function pollTransactionStatus(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await delay(intervalMs);
     const status = await server.getTransaction(hash);
-    
+
     if (status.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
       return;
     }
@@ -65,7 +65,10 @@ export async function pollTransactionStatus(
       intervalMs *= 2;
     }
   }
-  throw new SorobanIdentityError("Transaction confirmation timeout", "NETWORK_ERROR");
+  throw new SorobanIdentityError(
+    `Transaction confirmation timed out after ${maxAttempts} retries`,
+    "TIMEOUT"
+  );
 }
 
 function isTransientError(err: unknown): boolean {

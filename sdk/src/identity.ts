@@ -146,6 +146,7 @@ export class IdentityClient extends BaseClient {
       const did = scValToNative(confirmed.returnValue!) as string;
       return { did, estimatedFee, estimatedFeeXlm };
     } catch (e: unknown) {
+      if (e instanceof SorobanIdentityError && e.code === "TIMEOUT") throw e;
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("DID already exists")) {
         throw new SorobanIdentityError(
@@ -208,6 +209,7 @@ export class IdentityClient extends BaseClient {
         exponentialBackoff: this.config.pollingExponentialBackoff,
       });
     } catch (e: unknown) {
+      if (e instanceof SorobanIdentityError && e.code === "TIMEOUT") throw e;
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("DID not found")) {
         throw new SorobanIdentityError(

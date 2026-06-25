@@ -200,11 +200,16 @@ export class CredentialClient extends BaseClient {
       throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
     }
 
-    await pollTransactionStatus(this.server, result.hash, {
-      maxAttempts: this.config.pollingRetries,
-      intervalMs: this.config.pollingIntervalMs,
-      exponentialBackoff: this.config.pollingExponentialBackoff,
-    });
+    try {
+      await pollTransactionStatus(this.server, result.hash, {
+        maxAttempts: this.config.pollingRetries,
+        intervalMs: this.config.pollingIntervalMs,
+        exponentialBackoff: this.config.pollingExponentialBackoff,
+      });
+    } catch (e: unknown) {
+      if (e instanceof SorobanIdentityError && e.code === "TIMEOUT") throw e;
+      throw e;
+    }
     const confirmed = await this.server.getTransaction(result.hash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
     // Returns BytesN<32> — encode as hex
     const raw = scValToNative(confirmed.returnValue!) as Uint8Array;
