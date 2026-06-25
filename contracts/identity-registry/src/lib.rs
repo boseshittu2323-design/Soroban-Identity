@@ -4,6 +4,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
     Map, String, Symbol, Vec,
 };
+use soroban_sdk::xdr::ToXdr;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -436,8 +437,11 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    fn did_key(_env: &Env, controller: &Address) -> (Symbol, Address) {
-        (IDENTITY, controller.clone())
+    // Derives a stable storage key from the raw XDR bytes of the address so the
+    // key is never affected by changes to Address::to_string() across SDK versions.
+    fn did_key(env: &Env, controller: &Address) -> (Symbol, BytesN<32>) {
+        let key_bytes = env.crypto().sha256(&controller.clone().to_xdr(env));
+        (IDENTITY, key_bytes)
     }
 
     /// Builds a `did:stellar:<address>` string from a controller address.

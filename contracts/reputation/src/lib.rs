@@ -251,6 +251,35 @@ impl Reputation {
         Ok(())
     }
 
+    /// Updates the sybil thresholds stored in instance storage. Admin only.
+    ///
+    /// Emits a `ThresholdsUpdated` event so indexers can track threshold changes
+    /// without needing to diff storage snapshots.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `min_score` - New minimum score threshold.
+    /// * `min_reporters` - New minimum reporter count threshold.
+    pub fn update_thresholds(
+        env: Env,
+        min_score: i64,
+        min_reporters: u32,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(
+            &DEF_THRESH,
+            &DefaultThreshold {
+                min_score,
+                min_reporters,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("THRESH"), symbol_short!("updated")),
+            (EVENT_VERSION, min_score, min_reporters),
+        );
+        Ok(())
+    }
+
     /// Sets the default sybil threshold used by [`Self::passes_sybil_check_default`].
     ///
     /// Admin only. Stores a [`DefaultThreshold`] that callers can reference
