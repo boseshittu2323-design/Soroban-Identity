@@ -9,6 +9,10 @@ use soroban_sdk::xdr::ToXdr;
 /// Version returned by `ping` for deployment health checks.
 pub const CONTRACT_VERSION: u32 = 1;
 
+/// Schema version stamped on every emitted event. Increment on breaking schema changes
+/// so indexers can distinguish old from new event formats without silent breakage.
+const EVENT_VERSION: u32 = 1;
+
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
@@ -146,7 +150,7 @@ impl CredentialManager {
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         Self::require_uninitialized(&env)?;
         Self::set_admin(&env, &admin);
-        env.events().publish((ADMIN, symbol_short!("init")), admin);
+        env.events().publish((ADMIN, symbol_short!("init")), (EVENT_VERSION, admin));
         Ok(())
     }
 
@@ -176,7 +180,7 @@ impl CredentialManager {
         env.storage().instance().set(&ADMIN, &new_admin);
         env.events().publish(
             (ADMIN, symbol_short!("transfer")),
-            (current_admin, new_admin),
+            (EVENT_VERSION, current_admin, new_admin),
         );
         Ok(())
     }
@@ -229,7 +233,7 @@ impl CredentialManager {
             issuers.push_back(issuer.clone());
             env.storage().instance().set(&ISSUER, &issuers);
             env.events()
-                .publish((ISSUER, symbol_short!("added")), issuer);
+                .publish((ISSUER, symbol_short!("added")), (EVENT_VERSION, issuer));
         }
         Ok(())
     }
@@ -359,7 +363,7 @@ impl CredentialManager {
 
         env.events().publish(
             (CRED, symbol_short!("issued")),
-            (id.clone(), subject, issuer, credential_type, expires_at),
+            (EVENT_VERSION, id.clone(), subject, issuer, credential_type, expires_at),
         );
 
         Ok(id)
@@ -406,7 +410,7 @@ impl CredentialManager {
         env.storage().instance().set(&REVOKED_CNT, &(revoked + 1));
 
         env.events()
-            .publish((CRED, symbol_short!("revoked")), (credential_id, issuer));
+            .publish((CRED, symbol_short!("revoked")), (EVENT_VERSION, credential_id, issuer));
         Ok(())
     }
 
