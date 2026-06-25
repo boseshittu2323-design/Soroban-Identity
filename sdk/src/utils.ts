@@ -132,6 +132,39 @@ export async function checkConnection(server: SorobanRpc.Server): Promise<boolea
  * const id = computeCredentialId(issuer, subject, 'Kyc');
  * ```
  */
+/**
+ * Run `fn` over `items` with at most `concurrency` simultaneous promises.
+ *
+ * Unlike `Promise.all`, this keeps at most `concurrency` promises in-flight at
+ * any moment. Results are returned in input order.
+ *
+ * @param items       Items to process.
+ * @param fn          Async mapper applied to each item.
+ * @param concurrency Maximum simultaneous in-flight calls. Defaults to 5.
+ */
+export async function runConcurrent<T, R>(
+  items: T[],
+  fn: (item: T, index: number) => Promise<R>,
+  concurrency = 5
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    worker
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 export function computeCredentialId(
   issuer: string,
   subject: string,

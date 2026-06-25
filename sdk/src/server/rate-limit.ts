@@ -41,6 +41,13 @@ interface Bucket {
   config: RateLimitConfig;
 }
 
+/**
+ * Token-bucket rate limiter keyed by API key ID or remote IP.
+ *
+ * Tokens refill linearly over `windowMs`. Separate buckets are maintained for
+ * `read` and `write` rate classes. Per-key overrides can be supplied via
+ * {@link RateLimitOptions.overrides}.
+ */
 export class TokenBucketRateLimiter {
   private readonly buckets = new Map<string, Bucket>();
   private readonly now: () => number;
@@ -48,6 +55,9 @@ export class TokenBucketRateLimiter {
   private readonly readConfig: RateLimitConfig;
   private readonly writeConfig: RateLimitConfig;
 
+  /**
+   * @param options Rate limits, per-key overrides, and optional clock override.
+   */
   constructor(options: RateLimitOptions = {}) {
     this.now = options.now ?? Date.now;
     this.overrides = options.overrides ?? {};
@@ -120,6 +130,22 @@ function defaultClassify(_req: RequestLike, method: string): RateClass {
   return m === "GET" || m === "HEAD" || m === "OPTIONS" ? "read" : "write";
 }
 
+/**
+ * Create an Express-compatible rate-limit middleware backed by
+ * {@link TokenBucketRateLimiter}.
+ *
+ * Sets `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`
+ * headers on every response. Returns `429 Too Many Requests` with a
+ * `Retry-After` header when a bucket is exhausted.
+ *
+ * @param options Rate limit config, classifier, optional pre-built limiter.
+ * @returns Synchronous middleware function `(req, res, next) => void`.
+ *
+ * @example
+ * ```ts
+ * app.use(createRateLimitMiddleware({ read: { limit: 120, windowMs: 60_000 } }));
+ * ```
+ */
 export function createRateLimitMiddleware(options: RateLimitMiddlewareOptions = {}) {
   const limiter = options.rateLimiter ?? new TokenBucketRateLimiter(options);
   const keyFn = options.keyFn ?? defaultKey;

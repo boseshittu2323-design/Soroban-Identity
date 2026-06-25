@@ -52,6 +52,31 @@ paths:
                   status: { type: string, example: ok }
 
   /identity/dids:
+    get:
+      tags: [identity]
+      summary: List all registered DID documents (offset-paginated).
+      x-soroban-contract:
+        contract: identity-registry
+        function: list_dids
+      parameters:
+        - { in: query, name: page, schema: { type: integer, default: 1 }, description: 1-based page number. }
+        - { in: query, name: pageSize, schema: { type: integer, default: 20, maximum: 100 }, description: Records per page, capped at 100 server-side. }
+      responses:
+        '200':
+          description: Page of DID documents.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids:
+                    type: array
+                    items: { $ref: '#/components/schemas/DidDocument' }
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      pageSize: { type: integer }
     post:
       tags: [identity]
       summary: Create a new DID.

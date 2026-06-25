@@ -4,5 +4,10 @@
   "workspaces": [
     "sdk",
     "frontend"
-  ]
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=sdk && npm run build --workspace=frontend",
+    "build:sdk": "npm run build --workspace=sdk",
+    "build:frontend": "npm run build --workspace=frontend"
+  }
 }

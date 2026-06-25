@@ -17,6 +17,8 @@ const CRED: Symbol = symbol_short!("CRED");
 const SUBJECT: Symbol = symbol_short!("sub");
 const CRED_CNT: Symbol = symbol_short!("CREDCNT");
 const REVOKED_CNT: Symbol = symbol_short!("REVCNT");
+/// Secondary index: maps each issuer address to the IDs it has issued.
+const ISSUER_CREDS: Symbol = symbol_short!("ISSCREDS");
 
 const MAX_ISSUERS: u32 = 100;
 
@@ -341,6 +343,15 @@ impl CredentialManager {
             .persistent()
             .extend_ttl(&subject_key, TTL_MAX, TTL_MAX);
 
+        // Index credential under issuer for reverse lookup
+        let mut issuer_creds = Self::fetch_issuer_creds(&env, &issuer);
+        issuer_creds.push_back(id.clone());
+        let issuer_creds_key = Self::issuer_creds_key(&issuer);
+        env.storage().persistent().set(&issuer_creds_key, &issuer_creds);
+        env.storage()
+            .persistent()
+            .extend_ttl(&issuer_creds_key, TTL_MAX, TTL_MAX);
+
         // Increment per-subject credential counter
         let cnt_key = (CRED_CNT, subject.clone());
         let cnt: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0);
@@ -399,7 +410,8 @@ impl CredentialManager {
         Ok(())
     }
 
-    /// Verifies that a credential is valid — not revoked and not expired.
+    /// Verifies that a credential is valid and returns a typed result describing
+    /// any failure reason.
     ///
     /// Uses the on-chain ledger timestamp for expiry checks, preventing
     /// caller-supplied time spoofing. Bumps the storage TTL on success so
@@ -410,24 +422,31 @@ impl CredentialManager {
     /// * `credential_id` - The 32-byte ID of the credential to verify.
     ///
     /// # Returns
-    /// `true` if the credential exists, is not revoked, and has not expired.
-    /// `false` otherwise (including if the credential does not exist).
-    pub fn verify_credential(env: Env, credential_id: BytesN<32>) -> bool {
+    /// `Ok(())` if the credential exists, is not revoked, and has not expired.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::CredentialNotFound`] when no credential with the
+    /// given ID exists.
+    /// Returns [`ContractError::CredentialRevoked`] when the credential has been
+    /// revoked.
+    /// Returns [`ContractError::CredentialExpired`] when the credential's
+    /// `expires_at` timestamp has passed (checked against the ledger clock).
+    pub fn verify_credential(env: Env, credential_id: BytesN<32>) -> Result<(), ContractError> {
         let key = Self::cred_key(&credential_id);
         match env.storage().persistent().get::<_, Credential>(&key) {
-            None => false,
+            None => Err(ContractError::CredentialNotFound),
             Some(cred) => {
                 if cred.revoked {
-                    return false;
+                    return Err(ContractError::CredentialRevoked);
                 }
                 let now = env.ledger().timestamp();
                 if cred.expires_at > 0 && now > cred.expires_at {
-                    return false;
+                    return Err(ContractError::CredentialExpired);
                 }
                 // Bump TTL on read for active, non-expired credentials
                 let ttl = Self::ttl_for_credential(&env, cred.expires_at);
                 env.storage().persistent().extend_ttl(&key, ttl, ttl);
-                true
+                Ok(())
             }
         }
     }
@@ -666,6 +685,66 @@ impl CredentialManager {
         }
     }
 
+    /// Returns all credential IDs issued by a given issuer address.
+    ///
+    /// The list includes both active and revoked credential IDs. Use
+    /// [`Self::verify_credential`] to check the status of each ID.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `issuer` - The issuer address whose credential IDs to retrieve.
+    pub fn get_issuer_credentials(env: Env, issuer: Address) -> Vec<BytesN<32>> {
+        Self::fetch_issuer_creds(&env, &issuer)
+    }
+
+    /// Returns one page of credential IDs issued by a given issuer, ordered by
+    /// issuance.
+    ///
+    /// Pagination follows the same cursor model as
+    /// [`Self::list_subject_credentials`]: `cursor` is the zero-based start
+    /// index, `limit` is the page size (clamped to [`PAGE_CAP`], `0` →
+    /// `PAGE_CAP`). `next_cursor` is `None` when the iterator is exhausted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `issuer` - The issuer address whose credential IDs to retrieve.
+    /// * `cursor` - Optional resume index from a prior page's `next_cursor`.
+    /// * `limit` - Maximum items per page (clamped to [`PAGE_CAP`]).
+    pub fn list_issuer_credentials(
+        env: Env,
+        issuer: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> CredentialIdsPage {
+        let all = Self::fetch_issuer_creds(&env, &issuer);
+        let total = all.len();
+        let start: u64 = cursor.unwrap_or(0);
+
+        let effective_limit: u32 = if limit == 0 || limit > PAGE_CAP {
+            PAGE_CAP
+        } else {
+            limit
+        };
+
+        let mut items: Vec<BytesN<32>> = Vec::new(&env);
+        let mut next: u64 = start;
+        let mut taken: u32 = 0;
+
+        while (next as u32) < total && taken < effective_limit {
+            items.push_back(all.get(next as u32).unwrap());
+            next += 1;
+            taken += 1;
+        }
+
+        let next_cursor = if (next as u32) < total {
+            Some(next)
+        } else {
+            None
+        };
+
+        CredentialIdsPage { items, next_cursor }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Canonical init guard — see `contracts/README.md`.
@@ -715,6 +794,21 @@ impl CredentialManager {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn fetch_issuer_creds(env: &Env, issuer: &Address) -> Vec<BytesN<32>> {
+        let key = Self::issuer_creds_key(issuer);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, TTL_MAX, TTL_MAX);
+        }
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn issuer_creds_key(issuer: &Address) -> (Symbol, Address) {
+        (ISSUER_CREDS, issuer.clone())
     }
 
     fn derive_id(
@@ -836,7 +930,7 @@ mod tests {
         client.add_issuer(&issuer);
 
         let cred_id = issue_kyc(&env, &client, &issuer, &subject);
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
     }
 
     #[test]
@@ -848,7 +942,10 @@ mod tests {
 
         let cred_id = issue_kyc(&env, &client, &issuer, &subject);
         client.revoke_credential(&issuer, &cred_id);
-        assert!(!client.verify_credential(&cred_id));
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialRevoked))
+        );
     }
 
     #[test]
@@ -911,11 +1008,14 @@ mod tests {
             &expires_at,
         );
 
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
         env.ledger().with_mut(|li| {
             li.timestamp = expires_at + 1;
         });
-        assert!(!client.verify_credential(&cred_id));
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialExpired))
+        );
     }
 
     #[test]
@@ -940,7 +1040,7 @@ mod tests {
         );
 
         // Credential should be valid immediately
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
 
         // Advance ledger time past expiry
         env.ledger().with_mut(|li| {
@@ -949,7 +1049,10 @@ mod tests {
 
         // Credential should now be invalid - verify_credential uses env.ledger().timestamp(),
         // not any caller-provided value, preventing spoofing of time
-        assert!(!client.verify_credential(&cred_id));
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialExpired))
+        );
     }
 
     #[test]
@@ -1132,7 +1235,7 @@ mod tests {
 
         // Re-issuance after revoke must succeed
         let new_id = issue_kyc(&env, &client, &issuer, &subject);
-        assert!(client.verify_credential(&new_id));
+        client.verify_credential(&new_id);
     }
 
     #[test]
@@ -1159,7 +1262,7 @@ mod tests {
         );
 
         // Credential should still be verifiable (TTL was set)
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
     }
 
     #[test]
@@ -1184,8 +1287,8 @@ mod tests {
         );
 
         // Two consecutive verifies — both should succeed (TTL bumped on first)
-        assert!(client.verify_credential(&cred_id));
-        assert!(client.verify_credential(&cred_id));
+        client.verify_credential(&cred_id);
+        client.verify_credential(&cred_id);
     }
 
     #[test]
@@ -1211,8 +1314,11 @@ mod tests {
 
         client.revoke_credential(&issuer, &cred_id);
 
-        // verify_credential returns false for revoked — no TTL bump
-        assert!(!client.verify_credential(&cred_id));
+        // verify_credential returns CredentialRevoked for revoked — no TTL bump
+        assert_eq!(
+            client.try_verify_credential(&cred_id),
+            Err(Ok(ContractError::CredentialRevoked))
+        );
 
         // get_credential returns CredentialRevoked for revoked entries
         let result = client.try_get_credential(&cred_id);
@@ -1368,7 +1474,7 @@ mod tests {
     /// Storage namespace symbols must be pairwise distinct.
     #[test]
     fn test_storage_key_symbols_are_unique() {
-        let keys = [ADMIN, ISSUER, CRED, SUBJECT, CRED_CNT, REVOKED_CNT];
+        let keys = [ADMIN, ISSUER, CRED, SUBJECT, CRED_CNT, REVOKED_CNT, ISSUER_CREDS];
         for (i, left) in keys.iter().enumerate() {
             for right in keys.iter().skip(i + 1) {
                 assert_ne!(left, right);
