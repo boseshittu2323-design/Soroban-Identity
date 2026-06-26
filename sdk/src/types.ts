@@ -111,10 +111,32 @@ export interface SorobanIdentityConfig {
   reputationId: string;
   /** Transaction timeout in seconds. Defaults to 30. */
   txTimeout?: number;
+  /**
+   * Default wall-clock timeout in milliseconds for write operations such as
+   * `issueCredential`. When the timeout elapses the call rejects with
+   * `SorobanIdentityError` code `TIMEOUT`. Defaults to 30 000 ms.
+   * Override per-call via `CallOptions.timeoutMs`.
+   */
+  defaultTimeoutMs?: number;
   /** Maximum concurrent RPC requests. Defaults to 5. */
   maxConcurrentRequests?: number;
   /** Request retry delay in ms. Defaults to 1000. */
   retryDelay?: number;
+  /**
+   * Maximum number of retries for transient RPC failures in `resolveDid`.
+   * Defaults to 3. Set to 0 to disable retries.
+   */
+  maxRetries?: number;
+  /** Base delay in ms between `resolveDid` retries. Defaults to 500. */
+  baseDelayMs?: number;
+  /** Multiplier applied to the delay on each successive retry. Defaults to 2. */
+  backoffFactor?: number;
+  /** Maximum polling attempts when waiting for transaction confirmation. */
+  pollingRetries?: number;
+  /** Interval in ms between polling attempts. */
+  pollingIntervalMs?: number;
+  /** Whether to use exponential backoff between polling attempts. */
+  pollingExponentialBackoff?: boolean;
   /** Optional pluggable logger for RPC simulation/submission traces. */
   logger?: SorobanIdentityLogger;
   /**
@@ -131,6 +153,18 @@ export interface SorobanIdentityConfig {
 export interface CallOptions {
   /** Override transaction timeout in seconds for this call only. */
   timeoutSeconds?: number;
+  /**
+   * Wall-clock timeout in milliseconds for this call. When the timeout
+   * elapses the call rejects with `SorobanIdentityError` code `TIMEOUT`.
+   * Overrides `SorobanIdentityConfig.defaultTimeoutMs` for this call only.
+   */
+  timeoutMs?: number;
+  /** Override `maxRetries` for this call only (applies to `resolveDid`). */
+  maxRetries?: number;
+  /** Override `baseDelayMs` for this call only (applies to `resolveDid`). */
+  baseDelayMs?: number;
+  /** Override `backoffFactor` for this call only (applies to `resolveDid`). */
+  backoffFactor?: number;
 }
 
 /** Returned by write methods — includes the prepared transaction and estimated fee. */

@@ -24,6 +24,26 @@ import {
 // Dummy address used for lightweight initialization probes
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 
+function isTransientRpcError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  if (/\b(400|404)\b/.test(msg)) return false;
+  return (
+    msg.includes("429") ||
+    msg.includes("503") ||
+    msg.includes("504") ||
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("econnrefused") ||
+    msg.includes("network") ||
+    msg.includes("fetch failed")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Client for the identity-registry contract.
  *
@@ -259,26 +279,41 @@ export class IdentityClient extends BaseClient {
       .setTimeout(timeout)
       .build();
 
-    const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
-    const isSimulationError = SorobanRpc.Api.isSimulationError(result);
-    this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !isSimulationError });
-    if (isSimulationError) {
-      const errMsg = result.error ?? "";
-      const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
-      if (contractErr) throw contractErr;
-      if (errMsg.includes("DidDeactivated")) {
-        throw new SorobanIdentityError(`DID for address ${controllerAddress} has been deactivated.`, "VALIDATION_ERROR");
-      }
-      if (errMsg.includes("DidNotFound")) {
-        throw new SorobanIdentityError(`No DID found for address ${controllerAddress}.`, "NOT_FOUND");
-      }
-      throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, "CONTRACT_ERROR");
-    }
+    const maxRetries = options?.maxRetries ?? this.config.maxRetries ?? 3;
+    const baseDelayMs = options?.baseDelayMs ?? this.config.baseDelayMs ?? 500;
+    const backoffFactor = options?.backoffFactor ?? this.config.backoffFactor ?? 2;
 
-    return scValToNative(
-      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
-        .result!.retval
-    ) as DidDocument;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await this.server.simulateTransaction(tx);
+        const isSimulationError = SorobanRpc.Api.isSimulationError(result);
+        this.debug('sdk.simulation_result', { operation: 'identity.simulateTransaction', success: !isSimulationError });
+        if (isSimulationError) {
+          const errMsg = result.error ?? "";
+          const contractErr = ContractError.extract(errMsg, IDENTITY_REGISTRY_ERRORS);
+          if (contractErr) throw contractErr;
+          if (errMsg.includes("DidDeactivated")) {
+            throw new SorobanIdentityError(`DID for address ${controllerAddress} has been deactivated.`, "VALIDATION_ERROR");
+          }
+          if (errMsg.includes("DidNotFound")) {
+            throw new SorobanIdentityError(`No DID found for address ${controllerAddress}.`, "NOT_FOUND");
+          }
+          throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, "CONTRACT_ERROR");
+        }
+        return scValToNative(
+          (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
+            .result!.retval
+        ) as DidDocument;
+      } catch (err) {
+        if (attempt === maxRetries || !isTransientRpcError(err)) throw err;
+        lastError = err;
+        const delayMs = Math.floor(baseDelayMs * Math.pow(backoffFactor, attempt) + Math.random() * 100);
+        this.debug(`[identity] resolveDID retry ${attempt + 1}/${maxRetries} after ${delayMs}ms`, {});
+        await sleep(delayMs);
+      }
+    }
+    throw lastError;
   }
 
   /**

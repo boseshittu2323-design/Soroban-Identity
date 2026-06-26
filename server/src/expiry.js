@@ -2,14 +2,60 @@ import { readCredentials, upsertCredential, writeCredentials } from './storage.j
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+let _indexedCredentials = null;
+let _expiryIndex = null;
+
+/**
+ * Build a sorted index of credentials that have an `expires_at` value, ordered
+ * ascending by expiry time. Pass this to `findExpiringCredentials` to avoid
+ * O(n) scans on every call.
+ *
+ * @param {Array} credentials - Full credentials array.
+ * @returns {Array} Sorted array of credentials with `expires_at > 0`.
+ */
+export function buildExpiryIndex(credentials) {
+  return credentials
+    .filter((c) => Number(c.expires_at) > 0)
+    .sort((a, b) => Number(a.expires_at) - Number(b.expires_at));
+}
+
+function lowerBound(index, nowMs) {
+  let lo = 0;
+  let hi = index.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (Number(index[mid].expires_at) * 1000 < nowMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function upperBound(index, upper) {
+  let lo = 0;
+  let hi = index.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (Number(index[mid].expires_at) * 1000 <= upper) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export function findExpiringCredentials(credentials, { windowDays, now = new Date(), includeNotified = false } = {}) {
+  if (_indexedCredentials !== credentials) {
+    _expiryIndex = buildExpiryIndex(credentials);
+    _indexedCredentials = credentials;
+  }
+
   const nowMs = now.getTime();
   const upper = nowMs + windowDays * DAY_MS;
-  return credentials
-    .filter((credential) => Number(credential.expires_at) > 0)
-    .filter((credential) => Number(credential.expires_at) * 1000 >= nowMs && Number(credential.expires_at) * 1000 <= upper)
-    .filter((credential) => includeNotified || !credential.expiry_notified_at)
-    .sort((a, b) => Number(a.expires_at) - Number(b.expires_at));
+
+  const lo = lowerBound(_expiryIndex, nowMs);
+  const hi = upperBound(_expiryIndex, upper);
+
+  return _expiryIndex
+    .slice(lo, hi)
+    .filter((c) => includeNotified || !c.expiry_notified_at);
 }
 
 export function paginate(items, { page = 1, pageSize = 50 } = {}) {

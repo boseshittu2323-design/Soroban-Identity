@@ -259,75 +259,94 @@ export class CredentialClient extends BaseClient {
       }
     }
 
-    // #298 — validate claims against schema before submitting
-    if (options?.schemaId) {
-      await this._validateClaimsAgainstSchema(options.schemaId, claims);
-    }
+    const timeoutMs = options?.timeoutMs ?? this.config.defaultTimeoutMs ?? 30_000;
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
 
-    const account = await this.server.getAccount(issuerKeypair.publicKey());
-    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const work = async (): Promise<SorobanResponse<{ credentialId: string } & WriteResult>> => {
+      // #298 — validate claims against schema before submitting
+      if (options?.schemaId) {
+        await this._validateClaimsAgainstSchema(options.schemaId, claims);
+      }
 
-    // Signature is over SHA256(issuer + subject + claimsHash [+ nonce]) — deterministic canonical encoding
-    // #295: including nonce in the digest makes the ID derivation nonce-dependent on the SDK side
-    const signature = signatureHex
-      ? Buffer.from(signatureHex, "hex")
-      : (() => {
-          // Canonical message: issuer_public_key (utf8) || subject_address (utf8) || claims_hash (32 bytes) [|| nonce (utf8)]
-          const issuerBytes = Buffer.from(issuerKeypair.publicKey(), "utf8");
-          const subjectBytes = Buffer.from(subjectAddress, "utf8");
-          const claimsHashBytes = Buffer.from(claimsHashHex, "hex");
-          const parts: Buffer[] = [issuerBytes, subjectBytes, claimsHashBytes];
-          if (options?.nonce) {
-            parts.push(Buffer.from(options.nonce, "utf8"));
-          }
-          const msg = Buffer.concat(parts);
-          const digest = createHash("sha256").update(msg).digest();
-          return issuerKeypair.sign(digest);
-        })();
+      const account = await this.server.getAccount(issuerKeypair.publicKey());
+      const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
 
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(
-        this.contract.call(
-          "issue_credential",
-          ...buildIssueCredentialArgs({
-            issuer: issuerKeypair.publicKey(),
-            subject: subjectAddress,
-            credentialType,
-            claims,
-            claimsHash: Buffer.from(claimsHashHex, "hex"),
-            signature: Buffer.from(signature),
-            expiresAt: BigInt(expiresAt),
-          })
+      // Signature is over SHA256(issuer + subject + claimsHash [+ nonce]) — deterministic canonical encoding
+      // #295: including nonce in the digest makes the ID derivation nonce-dependent on the SDK side
+      const signature = signatureHex
+        ? Buffer.from(signatureHex, "hex")
+        : (() => {
+            // Canonical message: issuer_public_key (utf8) || subject_address (utf8) || claims_hash (32 bytes) [|| nonce (utf8)]
+            const issuerBytes = Buffer.from(issuerKeypair.publicKey(), "utf8");
+            const subjectBytes = Buffer.from(subjectAddress, "utf8");
+            const claimsHashBytes = Buffer.from(claimsHashHex, "hex");
+            const parts: Buffer[] = [issuerBytes, subjectBytes, claimsHashBytes];
+            if (options?.nonce) {
+              parts.push(Buffer.from(options.nonce, "utf8"));
+            }
+            const msg = Buffer.concat(parts);
+            const digest = createHash("sha256").update(msg).digest();
+            return issuerKeypair.sign(digest);
+          })();
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.config.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call(
+            "issue_credential",
+            ...buildIssueCredentialArgs({
+              issuer: issuerKeypair.publicKey(),
+              subject: subjectAddress,
+              credentialType,
+              claims,
+              claimsHash: Buffer.from(claimsHashHex, "hex"),
+              signature: Buffer.from(signature),
+              expiresAt: BigInt(expiresAt),
+            })
+          )
         )
-      )
-      .setTimeout(timeout)
-      .build();
+        .setTimeout(timeout)
+        .build();
 
-    const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
-    const estimatedFee = parseInt(prepared.fee, 10);
-    const estimatedFeeXlm = (estimatedFee / 10_000_000).toFixed(7);
-    prepared.sign(issuerKeypair);
+      const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
+      const estimatedFee = parseInt(prepared.fee, 10);
+      const estimatedFeeXlm = (estimatedFee / 10_000_000).toFixed(7);
+      prepared.sign(issuerKeypair);
 
-    const result = await retryWithBackoff(() => this.server.sendTransaction(prepared));
-    this.debug('sdk.submission_outcome', { operation: 'credentials.sendTransaction', status: result.status });
-    if (result.status !== "PENDING") {
-      throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
+      const result = await retryWithBackoff(() => this.server.sendTransaction(prepared));
+      this.debug('sdk.submission_outcome', { operation: 'credentials.sendTransaction', status: result.status });
+      if (result.status !== "PENDING") {
+        throw new SorobanIdentityError(`Transaction failed: ${result.status}`, "CONTRACT_ERROR");
+      }
+
+      const txHash = result.hash;
+      await pollTransactionStatus(this.server, txHash, {
+        maxAttempts: this.config.pollingRetries,
+        intervalMs: this.config.pollingIntervalMs,
+        exponentialBackoff: this.config.pollingExponentialBackoff,
+      });
+      const confirmed = await this.server.getTransaction(txHash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
+      // Returns BytesN<32> — encode as hex
+      const raw = scValToNative(confirmed.returnValue!) as Uint8Array;
+      const credentialId = Buffer.from(raw).toString("hex");
+      return { data: { credentialId, estimatedFee, estimatedFeeXlm }, txHash };
+    };
+
+    try {
+      return await Promise.race([
+        work(),
+        new Promise<never>((_, reject) => {
+          ac.signal.addEventListener('abort', () => {
+            reject(new SorobanIdentityError(`issueCredential timed out after ${timeoutMs}ms`, "TIMEOUT"));
+          });
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const txHash = result.hash;
-    await pollTransactionStatus(this.server, txHash, {
-      maxAttempts: this.config.pollingRetries,
-      intervalMs: this.config.pollingIntervalMs,
-      exponentialBackoff: this.config.pollingExponentialBackoff,
-    });
-    const confirmed = await this.server.getTransaction(txHash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
-    // Returns BytesN<32> — encode as hex
-    const raw = scValToNative(confirmed.returnValue!) as Uint8Array;
-    const credentialId = Buffer.from(raw).toString("hex");
-    return { data: { credentialId, estimatedFee, estimatedFeeXlm }, txHash };
   }
 
   /**

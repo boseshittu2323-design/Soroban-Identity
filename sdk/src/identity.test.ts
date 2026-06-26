@@ -166,3 +166,52 @@ describe('IdentityClient', () => {
     expect(result).toEqual(mockStats);
   });
 });
+
+describe('resolveDid — retry on transient RPC failures (#352)', () => {
+  let client: IdentityClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new IdentityClient(config);
+  });
+
+  it('retries on 503 and resolves after transient failures', async () => {
+    const mockDidDoc: DidDocument = {
+      id: 'did:stellar:GABC',
+      controller: 'GABC',
+      metadata: {},
+      createdAt: 1000,
+      updatedAt: 1000,
+      active: true,
+    };
+
+    mockIsSimulationError.mockReturnValue(false);
+    mockSimulateTransaction
+      .mockRejectedValueOnce(new Error('HTTP 503 Service Unavailable'))
+      .mockRejectedValueOnce(new Error('HTTP 503 Service Unavailable'))
+      .mockResolvedValueOnce({ result: { retval: mockDidDoc } });
+
+    const result = await client.resolveDid('GABC', { baseDelayMs: 0 });
+    expect(result).toEqual(mockDidDoc);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry on 404 and rejects immediately', async () => {
+    mockIsSimulationError.mockReturnValue(true);
+    mockSimulateTransaction.mockResolvedValue({ error: 'DidNotFound' });
+
+    await expect(
+      client.resolveDid('GABC', { maxRetries: 3, baseDelayMs: 0 })
+    ).rejects.toThrow('NOT_FOUND' || 'No DID found');
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('setting maxRetries: 0 disables retries entirely', async () => {
+    mockSimulateTransaction.mockRejectedValue(new Error('HTTP 503 Service Unavailable'));
+
+    await expect(
+      client.resolveDid('GABC', { maxRetries: 0, baseDelayMs: 0 })
+    ).rejects.toThrow('503');
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+  });
+});

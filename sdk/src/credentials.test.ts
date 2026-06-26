@@ -459,3 +459,50 @@ describe("CredentialClient.issueCredentialBatch (#358)", () => {
     expect(result.succeeded[0]!.data.credentialId).toBeDefined();
   });
 });
+
+describe("issueCredential — timeoutMs (#351)", () => {
+  let client: CredentialClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new CredentialClient(config);
+  });
+
+  it("rejects with TIMEOUT when the call exceeds timeoutMs", async () => {
+    const server = (client as any).server;
+    // Simulate a prepareTransaction that never resolves
+    server.prepareTransaction.mockImplementation(
+      () => new Promise<never>(() => undefined)
+    );
+
+    const issuerKeypair = {
+      publicKey: () => "GABC",
+      sign: vi.fn().mockReturnValue(new Uint8Array(64)),
+    } as any;
+
+    await expect(
+      client.issueCredential(
+        issuerKeypair,
+        "GABC",
+        "Kyc",
+        { role: "user" },
+        "a".repeat(64),
+        0,
+        { timeoutMs: 50 }
+      )
+    ).rejects.toMatchObject({ code: "TIMEOUT" });
+  });
+
+  it("resolves normally when the call completes before timeoutMs", async () => {
+    const result = await client.issueCredential(
+      { publicKey: () => "GABC", sign: vi.fn().mockReturnValue(new Uint8Array(64)) } as any,
+      "GABC",
+      "Kyc",
+      { role: "user" },
+      "a".repeat(64),
+      0,
+      { timeoutMs: 10_000 }
+    );
+    expect(result.data.credentialId).toBeDefined();
+  });
+});
