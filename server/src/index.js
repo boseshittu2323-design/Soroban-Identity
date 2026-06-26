@@ -20,7 +20,10 @@ server.listen(config.port, () => {
   console.log(`Soroban Identity server listening on :${config.port}`);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   expiryJob.stop();
-  server.close(() => process.exit(0));
+  server.close(async () => {
+    await soroban.drain();
+    process.exit(0);
+  });
 });

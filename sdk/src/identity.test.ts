@@ -10,6 +10,7 @@ const { mockSimulateTransaction, mockIsSimulationError } = vi.hoisted(() => ({
 vi.mock('@stellar/stellar-sdk', () => ({
   SorobanRpc: {
     Server: vi.fn().mockImplementation(() => ({
+      getHealth: vi.fn().mockResolvedValue({ status: 'healthy' }),
       getAccount: vi.fn().mockResolvedValue({ id: 'GABC', sequence: '0' }),
       simulateTransaction: mockSimulateTransaction,
       prepareTransaction: vi.fn().mockImplementation((tx) => tx),

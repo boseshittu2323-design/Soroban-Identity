@@ -1,5 +1,7 @@
 import { SorobanRpc, Contract } from "@stellar/stellar-sdk";
 import type { SorobanIdentityConfig, SorobanIdentityLogger } from "./types";
+import { SorobanIdentityError } from "./errors";
+import { retryWithBackoff } from "./utils";
 
 /** Semantic version of this SDK build — must match package.json `version`. */
 export const SDK_VERSION = "0.1.0";
@@ -53,6 +55,23 @@ export abstract class BaseClient {
   protected logger: SorobanIdentityLogger;
 
   /**
+   * Resolves when the RPC node reports healthy status; rejects with a
+   * `SorobanIdentityError` (code `CLIENT_NOT_READY`) if connectivity cannot
+   * be established after the configured retry budget.
+   *
+   * The promise starts running immediately in the background — constructing
+   * the client never blocks or throws.
+   *
+   * @example
+   * ```ts
+   * const client = new CredentialClient(config);
+   * await client.ready; // verifies RPC connectivity before the first call
+   * const cred = await client.getCredential(caller, id);
+   * ```
+   */
+  readonly ready: Promise<void>;
+
+  /**
    * @param config     SDK configuration including one or more RPC URLs.
    * @param contractId Deployed contract ID that this client wraps.
    */
@@ -76,6 +95,18 @@ export abstract class BaseClient {
           "Ensure the deployed contracts match this SDK release."
       );
     }
+
+    this.ready = this._checkHealth().catch((err) => {
+      throw new SorobanIdentityError(
+        `Client not ready: ${err instanceof Error ? err.message : String(err)}`,
+        "CLIENT_NOT_READY",
+        err
+      );
+    });
+  }
+
+  protected async _checkHealth(): Promise<void> {
+    await retryWithBackoff(() => this.server.getHealth());
   }
 
   protected get server(): SorobanRpc.Server {

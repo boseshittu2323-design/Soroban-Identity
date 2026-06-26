@@ -3,6 +3,7 @@ export { IdentityClient } from './identity';
 export { health, healthCheck } from './health';
 export type { HealthResult, HealthCheckResult } from './health';
 export { CredentialClient } from './credentials';
+export type { CredentialInput, BatchOptions, BatchResult } from './credentials';
 export { ReputationClient } from './reputation';
 export { PresentationClient } from './presentation';
 export type {

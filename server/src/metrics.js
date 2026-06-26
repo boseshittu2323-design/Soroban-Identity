@@ -7,6 +7,9 @@ export class MetricsService {
       credentials_issued_total: 0,
       credentials_revoked_total: 0,
       reputation_scores_submitted_total: 0,
+      rpc_cache_hits_total: 0,
+      rpc_cache_misses_total: 0,
+      rpc_retries_total: 0,
     };
     this.rpcLatencies = [];
   }

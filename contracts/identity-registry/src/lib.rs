@@ -4,6 +4,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
     Map, String, Symbol, Vec,
 };
+use soroban_sdk::xdr::ToXdr;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -283,6 +284,10 @@ impl IdentityRegistry {
         let key = Self::did_key(&env, &controller);
         let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
 
+        if !doc.active {
+            return Err(ContractError::DidDeactivated);
+        }
+
         doc.metadata = metadata;
         doc.updated_at = env.ledger().timestamp();
 
@@ -436,8 +441,11 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    fn did_key(_env: &Env, controller: &Address) -> (Symbol, Address) {
-        (IDENTITY, controller.clone())
+    // Derives a stable storage key from the raw XDR bytes of the address so the
+    // key is never affected by changes to Address::to_string() across SDK versions.
+    fn did_key(env: &Env, controller: &Address) -> (Symbol, BytesN<32>) {
+        let key_bytes = env.crypto().sha256(&controller.clone().to_xdr(env));
+        (IDENTITY, key_bytes)
     }
 
     /// Builds a `did:stellar:<address>` string from a controller address.
@@ -700,6 +708,24 @@ mod tests {
 
         let result = client.try_create_did(&user, &metadata);
         assert_eq!(result, Err(Ok(ContractError::MetadataTooLong)));
+    }
+
+    /// update_did on a deactivated DID must return DidDeactivated.
+    #[test]
+    fn test_update_deactivated_did_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let user = Address::generate(&env);
+        client.create_did(&user, &Map::new(&env));
+        client.deactivate_did(&user);
+        let mut metadata: Map<String, String> = Map::new(&env);
+        metadata.set(String::from_str(&env, "k"), String::from_str(&env, "v"));
+        let result = client.try_update_did(&user, &metadata);
+        assert_eq!(result, Err(Ok(ContractError::DidDeactivated)));
     }
 
     /// update_did must return EmptyMetadata when an empty map is passed.

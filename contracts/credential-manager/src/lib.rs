@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes,
-    BytesN, Env, Map, String, Symbol, Vec,
+    BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
 use soroban_sdk::xdr::ToXdr;
 
@@ -25,6 +25,7 @@ const REVOKED_CNT: Symbol = symbol_short!("REVCNT");
 const ISSUER_CREDS: Symbol = symbol_short!("ISSCREDS");
 
 const MAX_ISSUERS: u32 = 100;
+const IDENTITY_REGISTRY: Symbol = symbol_short!("IDREGIST");
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ pub struct Credential {
     pub signature: Bytes,
     /// Issuance timestamp
     pub issued_at: u64,
-    /// Optional expiry (0 = no expiry)
+    /// Optional expiry timestamp in Unix **seconds** (matches env.ledger().timestamp()). 0 = no expiry.
     pub expires_at: u64,
     /// Whether this credential has been revoked
     pub revoked: bool,
@@ -147,9 +148,10 @@ impl CredentialManager {
     /// # Errors
     /// Returns [`ContractError::AlreadyInitialized`] if the contract has already
     /// been initialized.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
+    pub fn initialize(env: Env, admin: Address, identity_registry_id: Address) -> Result<(), ContractError> {
         Self::require_uninitialized(&env)?;
         Self::set_admin(&env, &admin);
+        env.storage().instance().set(&IDENTITY_REGISTRY, &identity_registry_id);
         env.events().publish((ADMIN, symbol_short!("init")), (EVENT_VERSION, admin));
         Ok(())
     }
@@ -277,8 +279,8 @@ impl CredentialManager {
     /// * `claims_hash` - SHA-256 hash of the off-chain claims payload (32 bytes).
     ///   Stored on-chain for privacy-preserving verification.
     /// * `signature` - Issuer's signature over the credential data (64 bytes).
-    /// * `expires_at` - Unix timestamp after which the credential is invalid.
-    ///   Pass `0` for no expiry.
+    /// * `expires_at` - Unix timestamp in **seconds** after which the credential is invalid.
+    ///   Pass `0` for no expiry. Use `Date.now() / 1000` in the SDK, not `Date.now()`.
     ///
     /// # Returns
     /// The 32-byte credential ID as [`BytesN<32>`].
@@ -302,6 +304,23 @@ impl CredentialManager {
     ) -> Result<BytesN<32>, ContractError> {
         issuer.require_auth();
         Self::require_issuer(&env, &issuer)?;
+
+        // Verify subject has a registered, active DID before issuing any credential.
+        let registry_id: Address = env
+            .storage()
+            .instance()
+            .get(&IDENTITY_REGISTRY)
+            .ok_or(ContractError::NotInitialized)?;
+        let mut registry_args: Vec<Val> = Vec::new(&env);
+        registry_args.push_back(subject.clone().into_val(&env));
+        let has_did: bool = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "has_active_did"),
+            registry_args,
+        );
+        if !has_did {
+            panic!("subject does not have an active DID");
+        }
 
         let now = env.ledger().timestamp();
 
@@ -870,13 +889,23 @@ mod tests {
         Bytes, Env, Map,
     };
 
+    // Minimal mock so cross-contract has_active_did calls always succeed in unit tests.
+    struct MockIdentityRegistry;
+    #[contractimpl]
+    impl MockIdentityRegistry {
+        pub fn has_active_did(_env: Env, _controller: Address) -> bool {
+            true
+        }
+    }
+
     fn setup() -> (Env, Address, CredentialManagerClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
+        let registry_id = env.register_contract(None, MockIdentityRegistry);
         let contract_id = env.register_contract(None, CredentialManager);
         let client = CredentialManagerClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        client.initialize(&admin, &registry_id);
         (env, admin, client)
     }
 
@@ -1076,7 +1105,8 @@ mod tests {
     #[test]
     fn test_double_initialize_returns_error() {
         let (env, admin, client) = setup();
-        let result = client.try_initialize(&admin);
+        let dummy_registry = Address::generate(&env);
+        let result = client.try_initialize(&admin, &dummy_registry);
         assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
     }
 
@@ -1425,12 +1455,13 @@ mod tests {
     #[test]
     fn test_list_subject_credentials_empty_subject_returns_no_cursor() {
         let (env, _admin, _client) = setup();
+        let registry_id = env.register_contract(None, MockIdentityRegistry);
         let client = CredentialManagerClient::new(
             &env,
             &env.register_contract(None, CredentialManager),
         );
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        client.initialize(&admin, &registry_id);
         let subject = Address::generate(&env);
 
         let page = client.list_subject_credentials(&subject, &None, &10, &None);

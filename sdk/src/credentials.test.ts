@@ -12,6 +12,7 @@ vi.mock("@stellar/stellar-sdk", () => {
   return {
     SorobanRpc: {
       Server: vi.fn().mockImplementation(() => ({
+        getHealth: vi.fn().mockResolvedValue({ status: "healthy" }),
         getAccount: vi.fn().mockResolvedValue({ id: "GABC", sequence: "0" }),
         simulateTransaction: vi.fn().mockResolvedValue(mockSimResult),
         prepareTransaction: vi.fn().mockImplementation((tx) => tx),
@@ -47,6 +48,10 @@ vi.mock("@stellar/stellar-sdk", () => {
       isValidEd25519PublicKey: (addr: string) => typeof addr === "string" && addr.startsWith("G"),
       isValidContract: (id: string) =>
         typeof id === "string" && id.startsWith("C") && id.length === 56,
+    },
+    xdr: {
+      ScVal: { scvU64: vi.fn().mockReturnValue({}) },
+      Uint64: { fromString: vi.fn().mockReturnValue({}) },
     },
   };
 });
@@ -428,5 +433,74 @@ describe("CredentialClient", () => {
         expect(err).toBeInstanceOf(SorobanIdentityError);
       }
     }
+  });
+});
+
+describe("CredentialClient.issueCredentialBatch (#358)", () => {
+  let client: CredentialClient;
+
+  // Minimal keypair-shaped object matching the mock's Keypair.fromSecret return value
+  const issuerKeypair = {
+    publicKey: () => "GABC",
+    sign: vi.fn().mockReturnValue(new Uint8Array(64)),
+  } as any;
+
+  const makeInput = (subjectAddress: string) => ({
+    issuerKeypair,
+    subjectAddress,
+    credentialType: "Kyc" as const,
+    claims: { name: "Alice" },
+    claimsHashHex: "a".repeat(64),
+    expiresAt: 0,
+  });
+
+  beforeEach(() => {
+    client = new CredentialClient(config);
+    // Make issueCredential succeed by default (sendTransaction returns PENDING and getTransaction SUCCESS)
+    const server = (client as any).server;
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "txhash" });
+    server.getTransaction.mockResolvedValue({
+      status: "SUCCESS",
+      returnValue: new Uint8Array(32),
+    });
+  });
+
+  it("all success — all items return in succeeded", async () => {
+    const inputs = ["GABC", "GDEF", "GHIJ"].map(makeInput);
+    const result = await client.issueCredentialBatch(inputs, { concurrency: 5 });
+    expect(result.succeeded).toHaveLength(3);
+    expect(result.failed).toHaveLength(0);
+  });
+
+  it("all failure — all items appear in failed with wrapped errors", async () => {
+    const server = (client as any).server;
+    server.sendTransaction.mockRejectedValue(new Error("network down"));
+
+    const inputs = ["GABC", "GDEF"].map(makeInput);
+    const result = await client.issueCredentialBatch(inputs);
+    expect(result.succeeded).toHaveLength(0);
+    expect(result.failed).toHaveLength(2);
+    expect(result.failed[0]!.error.message).toContain("network down");
+  });
+
+  it("mixed — some succeed, some fail", async () => {
+    const server = (client as any).server;
+    // First call succeeds, second fails
+    server.sendTransaction
+      .mockResolvedValueOnce({ status: "PENDING", hash: "txhash" })
+      .mockRejectedValueOnce(new Error("rpc error"));
+
+    const inputs = ["GABC", "GDEF"].map(makeInput);
+    const result = await client.issueCredentialBatch(inputs, { concurrency: 5 });
+    expect(result.succeeded).toHaveLength(1);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]!.input.subjectAddress).toBe("GDEF");
+  });
+
+  it("single item — behaves identically to issueCredential", async () => {
+    const result = await client.issueCredentialBatch([makeInput("GABC")]);
+    expect(result.succeeded).toHaveLength(1);
+    expect(result.failed).toHaveLength(0);
+    expect(result.succeeded[0]!.data.credentialId).toBeDefined();
   });
 });

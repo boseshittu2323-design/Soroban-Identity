@@ -14,6 +14,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     SorobanRpc: {
       ...actual.SorobanRpc,
       Server: vi.fn().mockImplementation(() => ({
+        getHealth: vi.fn().mockResolvedValue({ status: 'healthy' }),
         getAccount: mockGetAccount,
         simulateTransaction: mockSimulateTransaction,
       })),

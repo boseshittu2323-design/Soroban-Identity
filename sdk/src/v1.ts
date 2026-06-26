@@ -14,7 +14,7 @@
  */
 
 export { IdentityClient } from './identity';
-export { CredentialClient } from './credentials';
+export { CredentialClient, toCredentialExpiry } from './credentials';
 export { ReputationClient } from './reputation';
 export { healthCheck } from './health';
 export type { HealthCheckResult } from './health';

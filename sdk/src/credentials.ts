@@ -43,6 +43,28 @@ import {
 } from "./contract-args";
 
 const PROBE_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+
+/**
+ * Converts a JavaScript Date or millisecond timestamp to Unix seconds for use
+ * as `expiresAt` in the credential-manager contract.
+ *
+ * The contract uses `env.ledger().timestamp()` which is Unix **seconds**.
+ * JavaScript's `Date.now()` returns **milliseconds**, so passing it directly
+ * would cause credentials to expire ~1000x sooner than intended.
+ *
+ * @param dateOrMs - A `Date` object or a millisecond timestamp (e.g. `Date.now()`).
+ * @returns Unix timestamp in seconds, safe to pass as `expiresAt`.
+ *
+ * @example
+ * ```ts
+ * const expiresAt = toCredentialExpiry(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+ * await credentials.issueCredential(issuer, subject, type, claims, hash, expiresAt);
+ * ```
+ */
+export function toCredentialExpiry(dateOrMs: Date | number): number {
+  const ms = dateOrMs instanceof Date ? dateOrMs.getTime() : dateOrMs;
+  return Math.floor(ms / 1000);
+}
 const CREDENTIAL_NOT_FOUND_CODE = 3;
 const CREDENTIAL_REVOKED_CODE = 4;
 const CREDENTIAL_EXPIRED_CODE = 9;
@@ -1161,6 +1183,70 @@ export class CredentialClient extends BaseClient {
       items: raw.items.map((b) => Buffer.from(b).toString('hex')),
       nextCursor: raw.next_cursor ?? null,
     };
+  }
+
+  /**
+   * Issue multiple credentials in controlled-concurrency chunks.
+   *
+   * Items are processed in batches of `opts.concurrency` (default: `5`).
+   * Each chunk is dispatched in parallel and fully awaited before the next
+   * chunk starts. A failure in one item does not abort the rest of the batch.
+   *
+   * @param items  Array of credential inputs to issue.
+   * @param opts   Optional batch configuration — primarily `concurrency`.
+   * @returns `{ succeeded, failed }` where `succeeded` contains successful
+   *   responses and `failed` contains per-item errors for any that were rejected.
+   *
+   * @example
+   * ```ts
+   * const { succeeded, failed } = await credentials.issueCredentialBatch(inputs, {
+   *   concurrency: 5,
+   * });
+   * if (failed.length > 0) {
+   *   console.warn(`${failed.length} credentials failed to issue`);
+   * }
+   * ```
+   */
+  async issueCredentialBatch(items: CredentialInput[], opts?: BatchOptions): Promise<BatchResult> {
+    const concurrency = opts?.concurrency ?? 5;
+    const succeeded: BatchResult["succeeded"] = [];
+    const failed: BatchResult["failed"] = [];
+
+    for (let i = 0; i < items.length; i += concurrency) {
+      const chunk = items.slice(i, i + concurrency);
+      const results = await Promise.allSettled(
+        chunk.map((item) =>
+          this.issueCredential(
+            item.issuerKeypair,
+            item.subjectAddress,
+            item.credentialType,
+            item.claims,
+            item.claimsHashHex,
+            item.expiresAt ?? 0,
+            item.options,
+            item.signatureHex
+          )
+        )
+      );
+      for (let j = 0; j < results.length; j++) {
+        const result = results[j]!;
+        if (result.status === "fulfilled") {
+          succeeded.push(result.value);
+        } else {
+          const error =
+            result.reason instanceof SorobanIdentityError
+              ? result.reason
+              : new SorobanIdentityError(
+                  result.reason instanceof Error ? result.reason.message : String(result.reason),
+                  "UNKNOWN",
+                  result.reason
+                );
+          failed.push({ input: chunk[j]!, error });
+        }
+      }
+    }
+
+    return { succeeded, failed };
   }
 
   /**
