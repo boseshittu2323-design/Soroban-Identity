@@ -78,6 +78,12 @@ export type {
   CredentialListOptions,
   VerifyResult,
   VerifyFailReason,
+  SorobanIdentityConfig,
+  ReputationRecord,
+  ScoreHistoryEntry,
+} from "./types";
+export { executeTransaction } from "./transaction";
+export type { TxOptions } from "./transaction";
   CallOptions,
   IdentityStorageStats,
   CredentialStorageStats,

@@ -4,6 +4,16 @@ import {
   TransactionBuilder,
   BASE_FEE,
   Keypair,
+} from "@stellar/stellar-sdk";
+import type { DidDocument, SorobanIdentityConfig } from "./types";
+import { executeTransaction, TxOptions } from "./transaction";
+import {
+  encodeAddress,
+  encodeMap,
+  decodeDidDocument,
+  decodeString,
+  decodeBoolean,
+} from "./codec";
   scValToNative,
   Account,
 } from "@stellar/stellar-sdk";
@@ -126,6 +136,10 @@ export class IdentityClient extends BaseClient {
   async createDid(
     keypair: Keypair,
     metadata: Record<string, string> = {},
+    txOptions?: TxOptions
+  ): Promise<string> {
+    const account = await this.server.getAccount(keypair.publicKey());
+
     options?: CallOptions
   ): Promise<SorobanResponse<{ did: string } & WriteResult>> {
     const account = await this.server.getAccount(keypair.publicKey());
@@ -139,12 +153,22 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "create_did",
+          encodeAddress(keypair.publicKey()),
+          encodeMap(metadata)
           ...buildCreateDidArgs({ controller: keypair.publicKey(), metadata })
         )
       )
       .setTimeout(timeout)
       .build();
 
+    try {
+      const confirmed = await executeTransaction(
+        this.server,
+        tx,
+        (t) => t.sign(keypair),
+        txOptions
+      );
+      return decodeString(confirmed.returnValue!);
     const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
     const estimatedFee = parseInt(prepared.fee, 10);
     const estimatedFeeXlm = (estimatedFee / 10_000_000).toFixed(7);
@@ -196,6 +220,8 @@ export class IdentityClient extends BaseClient {
   async updateDid(
     keypair: Keypair,
     metadata: Record<string, string>,
+    txOptions?: TxOptions
+  ): Promise<void> {
     options?: CallOptions
   ): Promise<SorobanResponse<void>> {
     const account = await this.server.getAccount(keypair.publicKey());
@@ -208,12 +234,16 @@ export class IdentityClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "update_did",
+          encodeAddress(keypair.publicKey()),
+          encodeMap(metadata)
           ...buildUpdateDidArgs({ controller: keypair.publicKey(), metadata })
         )
       )
       .setTimeout(timeout)
       .build();
 
+    try {
+      await executeTransaction(this.server, tx, (t) => t.sign(keypair), txOptions);
     const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
     prepared.sign(keypair);
 
@@ -271,6 +301,7 @@ export class IdentityClient extends BaseClient {
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(
+        this.contract.call("resolve_did", encodeAddress(controllerAddress))
         this.contract.call(
           "resolve_did",
           ...buildResolveDidArgs({ controller: controllerAddress })
@@ -387,6 +418,9 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError("Failed to get DID count", "UNKNOWN");
     }
 
+    return decodeDidDocument(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
         .result!.retval
@@ -422,6 +456,7 @@ export class IdentityClient extends BaseClient {
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(
+        this.contract.call("has_active_did", encodeAddress(controllerAddress))
         this.contract.call(
           "deactivate_did",
           ...buildDeactivateDidArgs({ controller: keypair.publicKey() })
@@ -502,6 +537,9 @@ export class IdentityClient extends BaseClient {
       throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, "CONTRACT_ERROR");
     }
 
+    return decodeBoolean(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as DidDocument[];

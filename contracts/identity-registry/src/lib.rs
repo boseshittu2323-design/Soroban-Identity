@@ -29,6 +29,8 @@ pub const CONTRACT_VERSION: u32 = 1;
 /// so indexers can distinguish old from new event formats without silent breakage.
 const EVENT_VERSION: u32 = 1;
 
+mod keys;
+
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const IDENTITY: Symbol = symbol_short!("IDENTITY");
@@ -209,7 +211,7 @@ impl IdentityRegistry {
         controller.require_auth();
 
         let storage = env.storage().persistent();
-        let key = Self::did_key(&env, &controller);
+        let key = keys::did_key(&env, &controller);
 
         if storage.has(&key) {
             return Err(ContractError::DidAlreadyExists);
@@ -281,6 +283,8 @@ impl IdentityRegistry {
         Self::validate_metadata(&metadata)?;
 
         let storage = env.storage().persistent();
+        let key = keys::did_key(&env, &controller);
+        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
         let key = Self::did_key(&env, &controller);
         let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
 
@@ -321,6 +325,8 @@ impl IdentityRegistry {
         controller.require_auth();
 
         let storage = env.storage().persistent();
+        let key = keys::did_key(&env, &controller);
+        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
         let key = Self::did_key(&env, &controller);
         let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
 
@@ -343,6 +349,10 @@ impl IdentityRegistry {
         Ok(())
     }
 
+    /// Resolve a DID document by controller address.
+    pub fn resolve_did(env: Env, controller: Address) -> DidDocument {
+        let key = keys::did_key(&env, &controller);
+        env.storage()
     /// Resolves a DID document by controller address.
     ///
     /// Returns the full [`DidDocument`] if the DID exists and is active.
@@ -379,6 +389,8 @@ impl IdentityRegistry {
     /// * `env` - The Soroban environment.
     /// * `controller` - The Stellar address to check.
     pub fn has_active_did(env: Env, controller: Address) -> bool {
+        let key = keys::did_key(&env, &controller);
+        match env.storage().persistent().get::<Bytes, DidDocument>(&key) {
         let key = Self::did_key(&env, &controller);
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
@@ -416,6 +428,9 @@ impl IdentityRegistry {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    fn build_did_id(env: &Env, controller: &Address) -> String {
+        // did:stellar:<bech32-address>
+        let prefix = String::from_str(env, "did:stellar:");
     /// Canonical init guard — see `contracts/README.md`.
     fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
         if env.storage().instance().has(&ADMIN) {

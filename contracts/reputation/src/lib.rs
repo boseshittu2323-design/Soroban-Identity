@@ -11,6 +11,7 @@ use soroban_sdk::{
     Symbol, Vec,
 };
 
+mod keys;
 /// Version returned by `ping` for deployment health checks.
 pub const CONTRACT_VERSION: u32 = 1;
 
@@ -383,6 +384,8 @@ impl Reputation {
             return Err(ContractError::ReasonTooLong);
         }
 
+        let rec_key = keys::record_key(&subject);
+        let mut record: ReputationRecord = env
         // Rate limiting: enforce MIN_INTERVAL ledgers between submissions per (reporter, subject)
         let rate_key = Self::rate_key(&subject, &reporter);
         let current_ledger = env.ledger().sequence();
@@ -412,8 +415,7 @@ impl Reputation {
         record.score = record.score.saturating_add(delta).max(MIN_SCORE);
         record.updated_at = now;
 
-        // Track whether this reporter is new for this subject
-        let history_key = Self::history_key(&subject, &reporter);
+        let history_key = keys::history_key(&subject, &reporter);
         let is_new = !env.storage().persistent().has(&history_key);
         if is_new {
             record.reporter_count = record.reporter_count.saturating_add(1);
@@ -428,7 +430,6 @@ impl Reputation {
         env.storage().persistent().set(&rec_key, &record);
         env.storage().persistent().extend_ttl(&rec_key, TTL_MAX, TTL_MAX);
 
-        // Append to per-reporter history
         let mut history: Vec<ScoreEntry> = env
             .storage()
             .persistent()
@@ -469,6 +470,7 @@ impl Reputation {
     /// * `env` - The Soroban environment.
     /// * `subject` - The address whose reputation record to fetch.
     pub fn get_reputation(env: Env, subject: Address) -> ReputationRecord {
+        let key = keys::record_key(&subject);
         let key = Self::record_key(&subject);
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(&key, TTL_MAX, TTL_MAX);
@@ -508,6 +510,8 @@ impl Reputation {
         reporter: Address,
         offset: u32,
         limit: u32,
+    ) -> Vec<ScoreEntry> {
+        let key = keys::history_key(&subject, &reporter);
     ) -> Result<Vec<ScoreEntry>, ContractError> {
         if !Self::get_reporters(&env).contains(&reporter) {
             return Err(ContractError::ReporterNotFound);
@@ -562,6 +566,8 @@ impl Reputation {
         min_score: i64,
         min_reporters: u32,
     ) -> bool {
+        let key = keys::record_key(&subject);
+        match env.storage().persistent().get::<(Symbol, Address), ReputationRecord>(&key) {
         let key = Self::record_key(&subject);
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(&key, TTL_MAX, TTL_MAX);

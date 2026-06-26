@@ -1,5 +1,14 @@
 #![no_std]
 
+use soroban_sdk::{contract, contractimpl, Address, Bytes, BytesN, Env, Map, String, Vec};
+
+mod types;
+mod keys;
+mod issuer;
+mod credential;
+mod revocation;
+
+pub use types::{Credential, CredentialType};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes,
     BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
@@ -127,6 +136,18 @@ pub struct CredentialManager;
 
 #[contractimpl]
 impl CredentialManager {
+    pub fn initialize(env: Env, admin: Address) {
+        issuer::initialize(&env, admin);
+    }
+
+    pub fn add_issuer(env: Env, issuer: Address) {
+        issuer::add_issuer(&env, issuer);
+    }
+
+    pub fn remove_issuer(env: Env, issuer: Address) {
+        issuer::remove_issuer(&env, issuer);
+    }
+
     /// Lightweight read-only liveness check used by deployment monitors.
     pub fn ping(_env: Env) -> u32 {
         CONTRACT_VERSION
@@ -301,6 +322,26 @@ impl CredentialManager {
         claims_hash: BytesN<32>,
         signature: Bytes,
         expires_at: u64,
+    ) -> BytesN<32> {
+        credential::issue_credential(
+            &env, issuer, subject, credential_type, claims, signature, expires_at,
+        )
+    }
+
+    pub fn revoke_credential(env: Env, issuer: Address, credential_id: BytesN<32>) {
+        revocation::revoke_credential(&env, issuer, credential_id);
+    }
+
+    pub fn verify_credential(env: Env, credential_id: BytesN<32>) -> bool {
+        revocation::verify_credential(&env, credential_id)
+    }
+
+    pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Credential {
+        credential::get_credential(&env, credential_id)
+    }
+
+    pub fn get_subject_credentials(env: Env, subject: Address) -> Vec<BytesN<32>> {
+        credential::get_subject_credentials(&env, subject)
     ) -> Result<BytesN<32>, ContractError> {
         issuer.require_auth();
         Self::require_issuer(&env, &issuer)?;
@@ -884,6 +925,7 @@ impl CredentialManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Bytes, Env, Map, String};
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _},
         Bytes, Env, Map,
