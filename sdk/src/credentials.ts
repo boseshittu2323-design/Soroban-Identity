@@ -21,6 +21,40 @@ export class CredentialClient {
   }
 
   /**
+   * Register a trusted issuer and their Ed25519 public key (admin only).
+   */
+  async addIssuer(
+    adminKeypair: Keypair,
+    issuerAddress: string,
+    issuerPublicKeyBytes: Buffer | Uint8Array
+  ): Promise<void> {
+    const account = await this.server.getAccount(adminKeypair.publicKey());
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          "add_issuer",
+          nativeToScVal(issuerAddress, { type: "address" }),
+          nativeToScVal(Buffer.from(issuerPublicKeyBytes), { type: "bytes" })
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const prepared = await this.server.prepareTransaction(tx);
+    prepared.sign(adminKeypair);
+
+    const result = await this.server.sendTransaction(prepared);
+    if (result.status !== "PENDING") {
+      throw new Error(`Transaction failed: ${result.status}`);
+    }
+    await this.waitForConfirmation(result.hash);
+  }
+
+  /**
    * Issue a credential to a subject. Caller must be a registered issuer.
    */
   async issueCredential(
@@ -32,10 +66,21 @@ export class CredentialClient {
   ): Promise<string> {
     const account = await this.server.getAccount(issuerKeypair.publicKey());
 
-    // Signature is over SHA256(issuer + subject + claims) — simplified here
-    const signature = issuerKeypair.sign(
-      Buffer.from(JSON.stringify({ subjectAddress, claims }))
-    );
+    // Build canonical signed message matching on-chain build_signed_message
+    let msgBuf = Buffer.concat([
+      Buffer.from(issuerKeypair.publicKey(), "utf8"),
+      Buffer.from(subjectAddress, "utf8"),
+    ]);
+    const sortedKeys = Object.keys(claims).sort();
+    for (const k of sortedKeys) {
+      msgBuf = Buffer.concat([
+        msgBuf,
+        Buffer.from(k, "utf8"),
+        Buffer.from(claims[k], "utf8"),
+      ]);
+    }
+
+    const signature = issuerKeypair.sign(msgBuf);
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,

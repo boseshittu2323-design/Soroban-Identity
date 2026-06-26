@@ -111,10 +111,11 @@ export class IdentityClient {
     const result = await this.server.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(result)) return false;
 
-    return scValToNative(
+    const native = scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
         .result!.retval
-    ) as boolean;
+    );
+    return typeof native === "boolean" ? native : Boolean(native);
   }
 
   private async waitForConfirmation(

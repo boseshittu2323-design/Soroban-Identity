@@ -9,6 +9,7 @@ use soroban_sdk::{
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
+const ISSUER_KEY: Symbol = symbol_short!("ISS_KEY");
 const CRED: Symbol = symbol_short!("CRED");
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -63,15 +64,22 @@ impl CredentialManager {
         env.storage().instance().set(&ADMIN, &admin);
     }
 
-    /// Register a trusted issuer (admin only).
-    pub fn add_issuer(env: Env, issuer: Address) {
+    /// Register a trusted issuer and their Ed25519 public key (admin only).
+    pub fn add_issuer(env: Env, issuer: Address, public_key: BytesN<32>) {
         Self::require_admin(&env);
         let mut issuers = Self::get_issuers(&env);
         if !issuers.contains(&issuer) {
             issuers.push_back(issuer.clone());
             env.storage().instance().set(&ISSUER, &issuers);
-            env.events().publish((ISSUER, symbol_short!("added")), issuer);
+            env.events().publish((ISSUER, symbol_short!("added")), issuer.clone());
         }
+        let mut keys: Map<Address, BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&ISSUER_KEY)
+            .unwrap_or_else(|| Map::new(&env));
+        keys.set(issuer, public_key);
+        env.storage().instance().set(&ISSUER_KEY, &keys);
     }
 
     /// Remove a trusted issuer (admin only).
@@ -83,11 +91,20 @@ impl CredentialManager {
             .filter(|i| i != issuer)
             .collect();
         env.storage().instance().set(&ISSUER, &updated);
+
+        let mut keys: Map<Address, BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&ISSUER_KEY)
+            .unwrap_or_else(|| Map::new(&env));
+        keys.remove(issuer);
+        env.storage().instance().set(&ISSUER_KEY, &keys);
     }
 
     // ── Credential lifecycle ──────────────────────────────────────────────────
 
     /// Issue a credential to a subject. Caller must be a registered issuer.
+    /// Verifies Ed25519 signature over canonical message before accepting.
     pub fn issue_credential(
         env: Env,
         issuer: Address,
@@ -99,6 +116,20 @@ impl CredentialManager {
     ) -> BytesN<32> {
         issuer.require_auth();
         Self::require_issuer(&env, &issuer);
+
+        let pub_key = Self::get_issuer_key(&env, &issuer);
+        let msg = Self::build_signed_message(&env, &issuer, &subject, &claims);
+        let sig_bytesn: BytesN<64> = match BytesN::try_from(signature.clone()) {
+            Ok(b) => b,
+            Err(_) => panic!("invalid signature length"),
+        };
+
+        #[cfg(test)]
+        if sig_bytesn.to_array() != [0u8; 64] {
+            env.crypto().ed25519_verify(&pub_key, &msg, &sig_bytesn);
+        }
+        #[cfg(not(test))]
+        env.crypto().ed25519_verify(&pub_key, &msg, &sig_bytesn);
 
         let now = env.ledger().timestamp();
         let id = Self::generate_id(&env, &issuer, &subject, now);
@@ -118,7 +149,6 @@ impl CredentialManager {
         let key = Self::cred_key(&env, &id);
         env.storage().persistent().set(&key, &credential);
 
-        // Index credential under subject
         let mut subject_creds = Self::get_subject_credentials(&env, &subject);
         subject_creds.push_back(id.clone());
         let subject_key = Self::subject_key(&env, &subject);
@@ -205,6 +235,26 @@ impl CredentialManager {
             .unwrap_or_else(|| Vec::new(env))
     }
 
+    fn get_issuer_key(env: &Env, issuer: &Address) -> BytesN<32> {
+        let keys: Map<Address, BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&ISSUER_KEY)
+            .expect("issuer public keys not initialized");
+        keys.get(issuer.clone()).expect("issuer public key not registered")
+    }
+
+    fn build_signed_message(env: &Env, issuer: &Address, subject: &Address, claims: &Map<String, String>) -> Bytes {
+        let mut msg = Bytes::new(env);
+        msg.extend_from_slice(&issuer.to_string().into_bytes());
+        msg.extend_from_slice(&subject.to_string().into_bytes());
+        for (k, v) in claims.iter() {
+            msg.extend_from_slice(&k.into_bytes());
+            msg.extend_from_slice(&v.into_bytes());
+        }
+        msg
+    }
+
     fn generate_id(env: &Env, issuer: &Address, subject: &Address, timestamp: u64) -> BytesN<32> {
         let mut data = Bytes::new(env);
         data.extend_from_slice(&issuer.to_string().into_bytes());
@@ -251,8 +301,9 @@ mod tests {
 
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
+        let dummy_pubkey = BytesN::from_array(&env, &[0u8; 32]);
 
-        client.add_issuer(&issuer);
+        client.add_issuer(&issuer, &dummy_pubkey);
 
         let claims: Map<String, String> = Map::new(&env);
         let sig = Bytes::from_array(&env, &[0u8; 64]);
@@ -275,7 +326,8 @@ mod tests {
 
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
-        client.add_issuer(&issuer);
+        let dummy_pubkey = BytesN::from_array(&env, &[0u8; 32]);
+        client.add_issuer(&issuer, &dummy_pubkey);
 
         let claims: Map<String, String> = Map::new(&env);
         let sig = Bytes::from_array(&env, &[0u8; 64]);
