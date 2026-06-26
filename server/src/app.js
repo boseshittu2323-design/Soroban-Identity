@@ -55,6 +55,11 @@ export function createApp({ config, soroban, metrics, metricsAggregator }) {
 
       return notFound(res);
     } catch (error) {
+      if (error.name === 'SorobanError') {
+        const reqId = req.headers['x-request-id'] || Math.random().toString(36).substring(7);
+        console.error(`[${reqId}] ${error.internalDetail}`);
+        return sendJson(res, 500, { error: error.category, message: error.publicMessage });
+      }
       console.error(error);
       return sendJson(res, 500, { error: 'internal_server_error', message: error.message });
     }

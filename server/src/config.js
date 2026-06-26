@@ -32,6 +32,11 @@ export function loadConfig(env = process.env) {
     sourceAccount: env.STELLAR_SOURCE_ACCOUNT ?? env.STELLAR_SECRET_KEY ?? '',
     network: env.STELLAR_NETWORK ?? 'testnet',
     rpcUrl: env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org',
+    rpcCacheTtlMs: parseInteger(env.RPC_CACHE_TTL_MS, 5000),
+    rpcMaxRetries: parseInteger(env.RPC_MAX_RETRIES, 3),
+    rpcRetryBaseMs: parseInteger(env.RPC_RETRY_BASE_MS, 500),
+    rpcRetryBackoff: parseInteger(env.RPC_RETRY_BACKOFF, 2),
+    eventPollIntervalMs: parseInteger(env.EVENT_POLL_INTERVAL_MS, 5000),
     contracts: {
       identity: env.IDENTITY_REGISTRY_ID ?? '',
       credential: env.CREDENTIAL_MANAGER_ID ?? '',
