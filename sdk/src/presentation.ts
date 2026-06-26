@@ -1,5 +1,12 @@
 import { randomBytes, createHash } from 'node:crypto';
-import type { Credential } from './types';
+import { Keypair } from '@stellar/stellar-sdk';
+import type { Credential, DidDocument } from './types';
+import { SorobanIdentityError } from './errors';
+
+/** Minimal interface — satisfied by {@link IdentityClient}. */
+interface DidResolverLike {
+  resolveDid(address: string): Promise<DidDocument>;
+}
 
 // ── W3C VC Data Model 2.0 types ─────────────────────────────────────────────
 
@@ -148,11 +155,25 @@ export class PresentationClient {
    * const vp = client.createPresentation(credential, ['name', 'country']);
    * ```
    */
-  createPresentation(
+  async createPresentation(
     credential: Credential,
     fieldsToDisclose: string[],
-    holderAddress?: string
-  ): VerifiablePresentation {
+    holderAddress?: string,
+    proofInput?: {
+      /** Base64url-encoded Ed25519 signature from the holder over the presentation payload. */
+      jws: string;
+      /** Client used to resolve the holder's DID and obtain their public key. */
+      identityClient: DidResolverLike;
+    },
+    opts?: { skipProofVerification?: boolean }
+  ): Promise<VerifiablePresentation> {
+    if (proofInput && !holderAddress) {
+      throw new SorobanIdentityError(
+        'holderAddress is required when proofInput is provided',
+        'INVALID_ARGUMENT'
+      );
+    }
+
     const disclosedClaims: Record<string, string> = {};
     for (const field of fieldsToDisclose) {
       if (Object.prototype.hasOwnProperty.call(credential.claims, field)) {
@@ -177,7 +198,7 @@ export class PresentationClient {
       expiresAt: credential.expiresAt,
     };
 
-    return {
+    const vp: VerifiablePresentation = {
       '@context': [W3C_VC_CONTEXT_V2],
       type: ['VerifiablePresentation'],
       id: presentationId,
@@ -185,6 +206,51 @@ export class PresentationClient {
       verifiableCredential: [vc],
       created: Date.now(),
     };
+
+    if (proofInput) {
+      const proof: PresentationProof = {
+        type: 'DataIntegrityProof',
+        created: vp.created,
+        proofPurpose: 'authentication',
+        cryptosuite: 'eddsa-2022',
+        verificationMethod: holderAddress ? `did:stellar:${holderAddress}#key-1` : undefined,
+        jws: proofInput.jws,
+      };
+
+      if (!opts?.skipProofVerification) {
+        const didDoc = await proofInput.identityClient.resolveDid(holderAddress!);
+        const signerAddress = didDoc.controller;
+
+        // Canonical payload: deterministic function of credential identity + fields
+        const payloadBytes = Buffer.from(
+          JSON.stringify({
+            credentialId: credential.id,
+            fieldsToDisclose: [...fieldsToDisclose].sort(),
+            holderAddress,
+          })
+        );
+
+        let sigBytes: Buffer;
+        try {
+          sigBytes = Buffer.from(proofInput.jws, 'base64url');
+        } catch {
+          throw new SorobanIdentityError('proof.jws is not valid base64url', 'INVALID_PROOF');
+        }
+
+        const keypair = Keypair.fromPublicKey(signerAddress);
+        const isValid = keypair.verify(payloadBytes, sigBytes);
+        if (!isValid) {
+          throw new SorobanIdentityError(
+            'proof.jws signature is invalid for the holder\'s DID key',
+            'INVALID_PROOF'
+          );
+        }
+      }
+
+      vp.proof = proof;
+    }
+
+    return vp;
   }
 
   /**

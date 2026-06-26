@@ -70,6 +70,21 @@ export interface Credential {
 }
 
 /**
+ * A credential that has been revoked, returned by
+ * {@link CredentialClient.revokeCredential}.
+ *
+ * Extends {@link Credential} with a required `revokedAt` ISO-8601 timestamp
+ * derived from the ledger close time of the revocation transaction, and a
+ * discriminant `status` field so callers can narrow the type without
+ * inspecting `revoked`.
+ */
+export interface RevokedCredential extends Credential {
+  /** ISO-8601 timestamp of the ledger that included the revocation transaction. */
+  revokedAt: string;
+  status: 'revoked';
+}
+
+/**
  * Reason a credential is invalid. Returned in {@link VerifyResult}.
  *
  * - `EXPIRED` — the credential's `expiresAt` timestamp has passed.
@@ -80,6 +95,10 @@ export interface Credential {
  * - `INACTIVE_SUBJECT` — the subject's DID has been deactivated.
  */
 export type VerifyFailReason =
+  | 'not_found'
+  | 'revoked'
+  | 'expired'
+  | 'unknown'
   | 'EXPIRED'
   | 'REVOKED'
   | 'INVALID_SIGNATURE'

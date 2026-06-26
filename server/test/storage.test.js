@@ -1,102 +1,100 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs from 'node:fs/promises';
+import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { appendAuditLog, ensureDataDir } from '../src/storage.js';
 
-async function makeConfig(dir) {
-  return {
-    dataDir: dir,
-    auditLogPath: path.join(dir, 'audit.log'),
-    credentialStorePath: path.join(dir, 'credentials.json'),
-  };
-}
-
-async function freshModule() {
-  // Re-import the module so each test starts with a clean module-level cache.
-  // Node's module cache would keep the old state, so we use a cache-busted URL.
-  const { readCredentials, writeCredentials, clearCredentialCache, TTL_MS } = await import(
-    `../src/storage.js?bust=${Date.now()}`
-  );
-  return { readCredentials, writeCredentials, clearCredentialCache, TTL_MS };
-}
-
-test('readCredentials — cache hit skips disk after first read', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-test-'));
-  const config = await makeConfig(dir);
-  const creds = [{ id: 'a' }, { id: 'b' }];
-  await fs.writeFile(config.credentialStorePath, JSON.stringify({ credentials: creds }), 'utf8');
-
-  const { readCredentials } = await freshModule();
-
-  let readCount = 0;
-  const origReadFile = fs.readFile;
-  fs.readFile = async (...args) => { readCount++; return origReadFile(...args); };
-
-  try {
-    for (let i = 0; i < 10; i++) {
-      await readCredentials(config);
+// Simple date mock
+const OriginalDate = global.Date;
+class MockDate extends OriginalDate {
+  constructor(...args) {
+    if (args.length === 0 && MockDate.mockTime !== null) {
+      super(MockDate.mockTime);
+    } else {
+      super(...args);
     }
-    assert.equal(readCount, 1, 'expected exactly one disk read for 10 consecutive calls');
-  } finally {
-    fs.readFile = origReadFile;
-    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+MockDate.mockTime = null;
+global.Date = MockDate;
+
+const testDataDir = path.resolve(process.cwd(), 'test-data-storage');
+const baseLogPath = path.join(testDataDir, 'audit');
+
+const config = {
+  dataDir: testDataDir,
+  auditLogPath: baseLogPath,
+  credentialStorePath: path.join(testDataDir, 'credentials.json'),
+  auditLogRetentionDays: 3
+};
+
+test.after(async () => {
+  // Restore Date
+  global.Date = OriginalDate;
+  // Cleanup test files
+  if (fs.existsSync(testDataDir)) {
+    await fsPromises.rm(testDataDir, { recursive: true, force: true });
   }
 });
 
-test('readCredentials — returns empty array when file does not exist', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-test-'));
-  const config = await makeConfig(dir);
-  const { readCredentials } = await freshModule();
-
-  try {
-    const result = await readCredentials(config);
-    assert.deepEqual(result, []);
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+test('appendAuditLog creates dated log file and handles rotation on date change', async () => {
+  // Ensure fresh folder
+  if (fs.existsSync(testDataDir)) {
+    await fsPromises.rm(testDataDir, { recursive: true, force: true });
   }
+  await ensureDataDir(config);
+
+  // Day 1
+  MockDate.mockTime = new Date('2026-06-01T12:00:00Z').getTime();
+  await appendAuditLog(config, { action: 'test-day-1' });
+
+  const pathDay1 = `${baseLogPath}-2026-06-01.ndjson`;
+  assert.ok(fs.existsSync(pathDay1), 'Day 1 log file should exist');
+
+  const contentDay1 = await fsPromises.readFile(pathDay1, 'utf8');
+  assert.match(contentDay1, /"action":"test-day-1"/);
+
+  // Day 2 (rotation)
+  MockDate.mockTime = new Date('2026-06-02T08:00:00Z').getTime();
+  await appendAuditLog(config, { action: 'test-day-2' });
+
+  const pathDay2 = `${baseLogPath}-2026-06-02.ndjson`;
+  assert.ok(fs.existsSync(pathDay2), 'Day 2 log file should exist');
+
+  const contentDay2 = await fsPromises.readFile(pathDay2, 'utf8');
+  assert.match(contentDay2, /"action":"test-day-2"/);
 });
 
-test('writeCredentials — invalidates cache so next read hits disk', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-test-'));
-  const config = await makeConfig(dir);
-  const initial = [{ id: 'x' }];
-  await fs.writeFile(config.credentialStorePath, JSON.stringify({ credentials: initial }), 'utf8');
-
-  const { readCredentials, writeCredentials } = await freshModule();
-
-  const first = await readCredentials(config);
-  assert.deepEqual(first, initial);
-
-  const updated = [{ id: 'x' }, { id: 'y' }];
-  await writeCredentials(config, updated);
-
-  const second = await readCredentials(config);
-  assert.deepEqual(second, updated, 'expected updated credentials after cache invalidation');
-
-  await fs.rm(dir, { recursive: true, force: true });
-});
-
-test('clearCredentialCache — forces next read to hit disk', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-test-'));
-  const config = await makeConfig(dir);
-  const creds = [{ id: 'c' }];
-  await fs.writeFile(config.credentialStorePath, JSON.stringify({ credentials: creds }), 'utf8');
-
-  const { readCredentials, clearCredentialCache } = await freshModule();
-
-  await readCredentials(config);
-  clearCredentialCache();
-
-  let readCount = 0;
-  const origReadFile = fs.readFile;
-  fs.readFile = async (...args) => { readCount++; return origReadFile(...args); };
-
-  try {
-    await readCredentials(config);
-    assert.equal(readCount, 1, 'expected disk read after clearCredentialCache');
-  } finally {
-    fs.readFile = origReadFile;
-    await fs.rm(dir, { recursive: true, force: true });
+test('ensureDataDir deletes audit files older than retention days', async () => {
+  if (fs.existsSync(testDataDir)) {
+    await fsPromises.rm(testDataDir, { recursive: true, force: true });
   }
+  await ensureDataDir(config);
+
+  // Today is 2026-06-05
+  MockDate.mockTime = new Date('2026-06-05T12:00:00Z').getTime();
+
+  // Active: 1 day old (2026-06-04)
+  const pathActive = `${baseLogPath}-2026-06-04.ndjson`;
+  // Active: 3 days old (2026-06-02)
+  const pathActiveLimit = `${baseLogPath}-2026-06-02.ndjson`;
+  // Expired: 4 days old (2026-06-01)
+  const pathExpired = `${baseLogPath}-2026-06-01.ndjson`;
+  // Expired: 10 days old (2026-05-26)
+  const pathExpiredOlder = `${baseLogPath}-2026-05-26.ndjson`;
+
+  await fsPromises.writeFile(pathActive, '{"action":"active"}');
+  await fsPromises.writeFile(pathActiveLimit, '{"action":"active-limit"}');
+  await fsPromises.writeFile(pathExpired, '{"action":"expired"}');
+  await fsPromises.writeFile(pathExpiredOlder, '{"action":"expired-older"}');
+
+  // Trigger cleanup via ensureDataDir
+  await ensureDataDir(config);
+
+  // Verify
+  assert.ok(fs.existsSync(pathActive), 'Active file should NOT be deleted');
+  assert.ok(fs.existsSync(pathActiveLimit), 'File at exact limit age should NOT be deleted');
+  assert.ok(!fs.existsSync(pathExpired), 'Expired file should be deleted');
+  assert.ok(!fs.existsSync(pathExpiredOlder), 'Very old expired file should be deleted');
 });

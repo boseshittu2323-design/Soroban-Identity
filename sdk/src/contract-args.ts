@@ -120,6 +120,23 @@ export function buildIssueCredentialArgs(params: {
 }
 
 /**
+ * Build args for `revoke_credential(issuer, credential_id)`.
+ *
+ * @param params.issuer       Registered issuer address (must sign the tx).
+ * @param params.credentialId 32-byte credential ID buffer.
+ * @returns ScVal array ready for `contract.call('revoke_credential', ...)`.
+ */
+export function buildRevokeCredentialArgs(params: {
+  issuer: string;
+  credentialId: Buffer;
+}): xdr.ScVal[] {
+  return [
+    nativeToScVal(params.issuer, { type: 'address' }),
+    nativeToScVal(params.credentialId, { type: 'bytes' }),
+  ];
+}
+
+/**
  * Build args for `verify_credential(credential_id)`.
  *
  * @param params.credentialId 32-byte credential ID buffer.

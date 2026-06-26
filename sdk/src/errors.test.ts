@@ -5,6 +5,7 @@ import {
   classifyError,
   wrapError,
 } from "./errors";
+import { SorobanErrorCodes } from "./error-codes";
 
 describe("SorobanIdentityError envelope (#249)", () => {
   it("accepts the legacy positional constructor", () => {
@@ -74,8 +75,35 @@ describe("classifyError", () => {
     ["fetch failed: ECONNREFUSED", "NETWORK_ERROR"],
     ["HostError: contract #4", "CONTRACT_ERROR"],
     ["something else entirely", "UNKNOWN"],
+    ["insufficient fee for transaction", "INSUFFICIENT_FEE"],
+    ["ledger closed before transaction", "LEDGER_CLOSED"],
+    ["contract panic: host environment error", "CONTRACT_PANIC"],
+    ["network connection timed out", "NETWORK_TIMEOUT"],
+    ["InvalidAddress: not a valid Stellar address", "INVALID_ADDRESS"],
+    ["invalid argument: missing required field", "INVALID_ARGUMENT"],
   ])("classifies %j as %s", (msg, expected) => {
     expect(classifyError(msg)).toBe(expected);
+  });
+});
+
+describe("SorobanErrorCodes", () => {
+  it("exposes all expected code constants", () => {
+    expect(SorobanErrorCodes.NOT_FOUND).toBe("NOT_FOUND");
+    expect(SorobanErrorCodes.UNAUTHORIZED).toBe("UNAUTHORIZED");
+    expect(SorobanErrorCodes.INVALID_ADDRESS).toBe("INVALID_ADDRESS");
+    expect(SorobanErrorCodes.INVALID_PROOF).toBe("INVALID_PROOF");
+    expect(SorobanErrorCodes.INVALID_ARGUMENT).toBe("INVALID_ARGUMENT");
+    expect(SorobanErrorCodes.NETWORK_TIMEOUT).toBe("NETWORK_TIMEOUT");
+    expect(SorobanErrorCodes.RPC_ERROR).toBe("RPC_ERROR");
+    expect(SorobanErrorCodes.CONTRACT_PANIC).toBe("CONTRACT_PANIC");
+    expect(SorobanErrorCodes.INSUFFICIENT_FEE).toBe("INSUFFICIENT_FEE");
+    expect(SorobanErrorCodes.LEDGER_CLOSED).toBe("LEDGER_CLOSED");
+    expect(SorobanErrorCodes.UNKNOWN).toBe("UNKNOWN");
+  });
+
+  it("codes are usable as SorobanIdentityError codes", () => {
+    const err = new SorobanIdentityError("fee too low", SorobanErrorCodes.INSUFFICIENT_FEE);
+    expect(err.code).toBe("INSUFFICIENT_FEE");
   });
 });
 

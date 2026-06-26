@@ -4,11 +4,20 @@
  *
  * - `NOT_FOUND` — record (DID, credential, reporter) does not exist
  * - `UNAUTHORIZED` — caller is not authorised for the requested operation
- * - `ALREADY_EXISTS` — creation conflicts; record already registered (#249)
- * - `INVALID_INPUT` — caller-provided data failed schema/shape validation (#249)
- * - `NETWORK_ERROR` — transport failure, RPC timeout, etc.
+ * - `ALREADY_EXISTS` — creation conflicts; record already registered
+ * - `INVALID_INPUT` — caller-provided data failed schema/shape validation
+ * - `INVALID_ADDRESS` — address fails Stellar ed25519 format validation
+ * - `INVALID_PROOF` — presentation proof.jws signature is invalid or missing
+ * - `INVALID_ARGUMENT` — a required argument is missing or malformed
+ * - `NETWORK_ERROR` — generic transport failure
+ * - `NETWORK_TIMEOUT` — network call timed out before a response arrived
+ * - `RPC_ERROR` — the RPC node returned an unexpected non-contract error
  * - `CONTRACT_ERROR` — contract returned a non-zero error code or simulation failed
- * - `RATE_LIMITED` — rate limit exhaustion (#254)
+ * - `CONTRACT_PANIC` — contract execution panicked (host environment error)
+ * - `INSUFFICIENT_FEE` — transaction fee was below what the network requires
+ * - `LEDGER_CLOSED` — the ledger closed before the transaction was included
+ * - `RATE_LIMITED` — rate limit exhaustion
+ * - `TIMEOUT` — polling or overall operation timed out
  * - `VALIDATION_ERROR` — retained for backwards-compatibility
  * - `UNKNOWN` — fallback when no other code fits
  */
@@ -17,12 +26,19 @@ export type SorobanErrorCode =
   | "UNAUTHORIZED"
   | "ALREADY_EXISTS"
   | "INVALID_INPUT"
+  | "INVALID_ADDRESS"
+  | "INVALID_PROOF"
+  | "INVALID_ARGUMENT"
   | "NETWORK_ERROR"
-  | "TIMEOUT"
+  | "NETWORK_TIMEOUT"
+  | "RPC_ERROR"
   | "CONTRACT_ERROR"
+  | "CONTRACT_PANIC"
+  | "INSUFFICIENT_FEE"
+  | "LEDGER_CLOSED"
   | "RATE_LIMITED"
+  | "TIMEOUT"
   | "VALIDATION_ERROR"
-  | "CLIENT_NOT_READY"
   | "UNKNOWN";
 
 export interface SorobanIdentityErrorInit {
@@ -207,9 +223,16 @@ export function classifyError(message: string): SorobanErrorCode {
   if (/not\s+(found|registered|active)|no such/u.test(m)) return "NOT_FOUND";
   if (/unauthori[sz]ed|forbidden|permission denied/u.test(m)) return "UNAUTHORIZED";
   if (/rate limit|too many requests/u.test(m)) return "RATE_LIMITED";
+  if (/insufficient.*(fee|balance)|fee.*too.*low/u.test(m)) return "INSUFFICIENT_FEE";
+  if (/ledger.*closed|seq.*too.*old/u.test(m)) return "LEDGER_CLOSED";
+  if (/panic|host environment/u.test(m)) return "CONTRACT_PANIC";
+  if (/invalid.*address|not.*valid.*stellar/u.test(m)) return "INVALID_ADDRESS";
+  if (/invalid.*argument|required.*argument/u.test(m)) return "INVALID_ARGUMENT";
   if (/invalid|malformed|bad request|missing/u.test(m)) return "INVALID_INPUT";
+  if (/network.*timed?\s*out|connection.*timed?\s*out/u.test(m)) return "NETWORK_TIMEOUT";
   if (/timed?\s*out|timeout/u.test(m)) return "TIMEOUT";
   if (/econnrefused|enotfound|network|fetch failed/u.test(m)) return "NETWORK_ERROR";
+  if (/rpc.*error|rpc.*fail/u.test(m)) return "RPC_ERROR";
   if (/#\d+/.test(m)) return "CONTRACT_ERROR";
   return "UNKNOWN";
 }

@@ -17,6 +17,7 @@ import type {
   CredentialType,
   Page,
   PaginationOptions,
+  RevokedCredential,
   SorobanIdentityConfig,
   SorobanResponse,
   VerifyResult,
@@ -24,11 +25,12 @@ import type {
 } from "./types";
 import { validateConfig } from "./types";
 import { retryWithBackoff, validateStellarAddress, pollTransactionStatus, runConcurrent } from "./utils";
-import { ContractError, SorobanIdentityError, ClaimsValidationError } from "./errors";
+import { ContractError, SorobanIdentityError, wrapError } from "./errors";
 import { CREDENTIAL_MANAGER_ERRORS } from "./error-codes";
 import { BaseClient } from "./base-client";
 import {
   buildIssueCredentialArgs,
+  buildRevokeCredentialArgs,
   buildVerifyCredentialArgs,
   buildGetCredentialArgs,
   buildGetSubjectCredentialsArgs,
@@ -350,6 +352,70 @@ export class CredentialClient extends BaseClient {
   }
 
   /**
+   * Revoke a credential that was issued by `issuerKeypair`.
+   *
+   * Submits a `revoke_credential` call signed by the issuer and polls until the
+   * transaction is final. Returns the revoked credential record including a
+   * `revokedAt` ISO-8601 timestamp derived from the ledger close time of the
+   * revocation transaction.
+   *
+   * @param issuerKeypair  The registered issuer keypair that originally issued
+   *                       the credential. Must sign the revocation transaction.
+   * @param credentialId   Hex-encoded credential ID (32 bytes).
+   * @param options        Per-call overrides (currently `timeoutSeconds`).
+   * @returns `{ data: RevokedCredential, txHash }` where `revokedAt` reflects
+   *          the on-chain ledger close time, not the client clock.
+   * @throws {SorobanIdentityError} with code `NOT_FOUND` if the credential does
+   *   not exist, `UNAUTHORIZED` if the issuer is not authorised to revoke, or
+   *   `CONTRACT_ERROR` for any other submission failure.
+   */
+  async revokeCredential(
+    issuerKeypair: Keypair,
+    credentialId: string,
+    options?: CallOptions
+  ): Promise<SorobanResponse<RevokedCredential>> {
+    const account = await this.server.getAccount(issuerKeypair.publicKey());
+    const timeout = options?.timeoutSeconds ?? this.config.txTimeout ?? 30;
+    const idBytes = Buffer.from(credentialId, 'hex');
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          'revoke_credential',
+          ...buildRevokeCredentialArgs({ issuer: issuerKeypair.publicKey(), credentialId: idBytes })
+        )
+      )
+      .setTimeout(timeout)
+      .build();
+
+    try {
+      const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
+      prepared.sign(issuerKeypair);
+
+      const result = await retryWithBackoff(() => this.server.sendTransaction(prepared));
+      this.debug('sdk.submission_outcome', { operation: 'credentials.revokeCredential', status: result.status });
+      if (result.status !== 'PENDING') {
+        throw new SorobanIdentityError(`Transaction failed: ${result.status}`, 'CONTRACT_ERROR');
+      }
+
+      const txHash = result.hash;
+      await pollTransactionStatus(this.server, txHash);
+
+      const confirmed = await this.server.getTransaction(txHash) as SorobanRpc.Api.GetSuccessfulTransactionResponse;
+      const revokedAt = new Date((confirmed as { createdAt: number }).createdAt * 1000).toISOString();
+
+      const credential = await this.getCredential(issuerKeypair.publicKey(), credentialId, options);
+      const revokedCredential: RevokedCredential = { ...credential, revokedAt, status: 'revoked' };
+      return { data: revokedCredential, txHash };
+    } catch (e) {
+      throw wrapError(e);
+    }
+  }
+
+  /**
    * Validate `claims` against the schema identified by `schemaId`.
    * Uses `ajv` for JSON Schema validation. Throws `ClaimsValidationError`
    * on failure.
@@ -457,21 +523,32 @@ export class CredentialClient extends BaseClient {
 
     if (isSimulationError) {
       const error: string = (result as { error: string }).error ?? "";
-      const contractErr = ContractError.extract(error, CREDENTIAL_MANAGER_ERRORS);
-      if (contractErr?.code === CREDENTIAL_NOT_FOUND_CODE) {
-        return { valid: false, reason: 'UNKNOWN_ISSUER' };
+      const lowerError = error.toLowerCase();
+      if (lowerError.includes('not found') || lowerError.includes('credentialnotfound')) {
+        return { valid: false, reason: 'not_found' };
       }
-      if (contractErr?.code === CREDENTIAL_REVOKED_CODE) {
-        return { valid: false, reason: 'REVOKED' };
-      }
-      if (contractErr?.code === CREDENTIAL_EXPIRED_CODE) {
-        return { valid: false, reason: 'EXPIRED' };
-      }
-      return { valid: false };
+      return { valid: false, reason: 'unknown' };
     }
 
-    // Contract returned Ok(()) — credential is active and unexpired
-    return { valid: true };
+    const retval = scValToNative(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
+
+    if (retval !== false) {
+      return { valid: true };
+    }
+
+    // Contract returned false — fetch the credential to determine why
+    try {
+      const credential = await this.getCredential(callerAddress, credentialId, options);
+      if (credential.revoked) return { valid: false, reason: 'revoked' };
+      if (credential.expiresAt > 0 && credential.expiresAt < Math.floor(Date.now() / 1000)) {
+        return { valid: false, reason: 'expired' };
+      }
+      return { valid: false, reason: 'unknown' };
+    } catch {
+      return { valid: false, reason: 'unknown' };
+    }
   }
 
   /**

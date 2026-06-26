@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { validateStellarAddress, checkConnection } from "./utils";
+import { SorobanIdentityError } from "./errors";
 
 vi.mock("@stellar/stellar-sdk", () => ({
   StrKey: {
@@ -29,6 +30,28 @@ describe("validateStellarAddress", () => {
 
   it("error message includes the invalid address", () => {
     expect(() => validateStellarAddress("bad")).toThrow('"bad"');
+  });
+
+  it("throws SorobanIdentityError with code INVALID_ADDRESS for wrong length address", () => {
+    try {
+      // Short G-prefixed string fails the length check in the mock
+      validateStellarAddress("GABCDE");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(SorobanIdentityError);
+      expect((err as SorobanIdentityError).code).toBe("INVALID_ADDRESS");
+    }
+  });
+
+  it("throws SorobanIdentityError with code INVALID_ADDRESS for non-G prefix address", () => {
+    try {
+      // Does not start with 'G' — fails the mock's prefix check
+      validateStellarAddress("XABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQRSTU");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(SorobanIdentityError);
+      expect((err as SorobanIdentityError).code).toBe("INVALID_ADDRESS");
+    }
   });
 });
 

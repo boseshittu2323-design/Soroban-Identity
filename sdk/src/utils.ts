@@ -97,7 +97,7 @@ function delay(ms: number): Promise<void> {
  */
 export function validateStellarAddress(address: string): void {
   if (!StrKey.isValidEd25519PublicKey(address)) {
-    throw new SorobanIdentityError(`InvalidAddress: "${address}" is not a valid Stellar address`, "VALIDATION_ERROR");
+    throw new SorobanIdentityError(`InvalidAddress: "${address}" is not a valid Stellar address`, "INVALID_ADDRESS");
   }
 }
 
