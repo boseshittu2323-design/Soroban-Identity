@@ -284,6 +284,10 @@ impl IdentityRegistry {
         let key = Self::did_key(&env, &controller);
         let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
 
+        if !doc.active {
+            return Err(ContractError::DidDeactivated);
+        }
+
         doc.metadata = metadata;
         doc.updated_at = env.ledger().timestamp();
 
@@ -704,6 +708,24 @@ mod tests {
 
         let result = client.try_create_did(&user, &metadata);
         assert_eq!(result, Err(Ok(ContractError::MetadataTooLong)));
+    }
+
+    /// update_did on a deactivated DID must return DidDeactivated.
+    #[test]
+    fn test_update_deactivated_did_returns_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let user = Address::generate(&env);
+        client.create_did(&user, &Map::new(&env));
+        client.deactivate_did(&user);
+        let mut metadata: Map<String, String> = Map::new(&env);
+        metadata.set(String::from_str(&env, "k"), String::from_str(&env, "v"));
+        let result = client.try_update_did(&user, &metadata);
+        assert_eq!(result, Err(Ok(ContractError::DidDeactivated)));
     }
 
     /// update_did must return EmptyMetadata when an empty map is passed.
