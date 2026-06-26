@@ -28,8 +28,13 @@
   --badge-green-text:         #166534;
   --badge-red-bg:             #fee2e2;
   --badge-red-text:           #991b1b;
+  --badge-gray-bg:            #e2e8f0;
+  --badge-gray-text:          #475569;
   --badge-purple-bg:          #ede9fe;
   --badge-purple-text:        #5b21b6;
+  --warning-bg:               #fff7ed;
+  --warning-text:             #9a3412;
+  --warning-border:           #fdba74;
   --error-text:               #dc2626;
   --sybil-pass-bg:            rgba(34,197,94,0.15);
   --sybil-pass-text:          #16a34a;
@@ -39,6 +44,8 @@
   --sybil-fail-border:        #dc2626;
   --filter-badge-active-bg:   #7c3aed;
   --filter-badge-active-text: #ffffff;
+  --btn-text:                 #ffffff;
+  --focus-ring:               #7c3aed;
 }
 
 /* ── Dark mode via system preference ─────────────────────────────────────────── */
@@ -70,8 +77,13 @@
     --badge-green-text:         #6ee7b7;
     --badge-red-bg:             #450a0a;
     --badge-red-text:           #fca5a5;
+    --badge-gray-bg:            #334155;
+    --badge-gray-text:          #cbd5e1;
     --badge-purple-bg:          #2e1065;
     --badge-purple-text:        #c4b5fd;
+    --warning-bg:               #431407;
+    --warning-text:             #fed7aa;
+    --warning-border:           #c2410c;
     --error-text:               #fca5a5;
     --sybil-pass-bg:            rgba(34,197,94,0.15);
     --sybil-pass-text:          #4ade80;
@@ -81,6 +93,8 @@
     --sybil-fail-border:        #f87171;
     --filter-badge-active-bg:   #a78bfa;
     --filter-badge-active-text: #1e1b4b;
+    --btn-text:                 #ffffff;
+    --focus-ring:               #a78bfa;
   }
 }
 
@@ -112,8 +126,13 @@ html.dark {
   --badge-green-text:         #6ee7b7;
   --badge-red-bg:             #450a0a;
   --badge-red-text:           #fca5a5;
+  --badge-gray-bg:            #334155;
+  --badge-gray-text:          #cbd5e1;
   --badge-purple-bg:          #2e1065;
   --badge-purple-text:        #c4b5fd;
+  --warning-bg:               #431407;
+  --warning-text:             #fed7aa;
+  --warning-border:           #c2410c;
   --error-text:               #fca5a5;
   --sybil-pass-bg:            rgba(34,197,94,0.15);
   --sybil-pass-text:          #4ade80;
@@ -123,6 +142,8 @@ html.dark {
   --sybil-fail-border:        #f87171;
   --filter-badge-active-bg:   #a78bfa;
   --filter-badge-active-text: #1e1b4b;
+  --btn-text:                 #ffffff;
+  --focus-ring:               #a78bfa;
 }
 
 /* ── Light mode forced via manual class toggle ───────────────────────────────── */
@@ -153,8 +174,13 @@ html.light {
   --badge-green-text:         #166534;
   --badge-red-bg:             #fee2e2;
   --badge-red-text:           #991b1b;
+  --badge-gray-bg:            #e2e8f0;
+  --badge-gray-text:          #475569;
   --badge-purple-bg:          #ede9fe;
   --badge-purple-text:        #5b21b6;
+  --warning-bg:               #fff7ed;
+  --warning-text:             #9a3412;
+  --warning-border:           #fdba74;
   --error-text:               #dc2626;
   --sybil-pass-bg:            rgba(34,197,94,0.15);
   --sybil-pass-text:          #16a34a;
@@ -164,6 +190,8 @@ html.light {
   --sybil-fail-border:        #dc2626;
   --filter-badge-active-bg:   #7c3aed;
   --filter-badge-active-text: #ffffff;
+  --btn-text:                 #ffffff;
+  --focus-ring:               #7c3aed;
 }
 
 /* ── Base styles ─────────────────────────────────────────────────────────────── */
@@ -209,9 +237,18 @@ input, textarea {
   margin-bottom: 0.75rem;
 }
 
+select {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+}
+
 button {
   background: var(--accent);
-  color: #fff;
+  color: var(--btn-text);
   border: none;
   border-radius: 8px;
   padding: 0.6rem 1.2rem;
@@ -233,7 +270,9 @@ button:disabled { background: var(--btn-disabled-bg); color: var(--btn-disabled-
 
 .badge-green  { background: var(--badge-green-bg);  color: var(--badge-green-text); }
 .badge-red    { background: var(--badge-red-bg);    color: var(--badge-red-text); }
+.badge-gray   { background: var(--badge-gray-bg);   color: var(--badge-gray-text); }
 .badge-purple { background: var(--badge-purple-bg); color: var(--badge-purple-text); }
+.badge-gray   { background: var(--border-input);    color: var(--text-muted); }
 
 .result {
   margin-top: 1rem;
@@ -253,7 +292,40 @@ button:disabled { background: var(--btn-disabled-bg); color: var(--btn-disabled-
   padding: 0.5rem 1rem;
   border-radius: 8px;
 }
-.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tab.active { background: var(--accent); border-color: var(--accent); color: var(--btn-text); }
+
+/* ── Spinner ─────────────────────────────────────────────────────────────────── */
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.spinner {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+
+/* ── Skeleton loader ─────────────────────────────────────────────────────────── */
+
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+.skeleton {
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--border-input) 25%, var(--bg-subtle) 50%, var(--border-input) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+.skeleton-card { display: flex; flex-direction: column; gap: 0.75rem; }
+.skeleton-title { height: 1.1rem; width: 40%; }
+.skeleton-row   { height: 0.85rem; }
 
 .theme-toggle {
   background: transparent;
@@ -265,3 +337,151 @@ button:disabled { background: var(--btn-disabled-bg); color: var(--btn-disabled-
   transition: background 0.2s, color 0.2s;
 }
 .theme-toggle:hover { background: var(--bg-subtle); color: var(--text); }
+
+.network-switcher {
+  align-items: center;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.25rem 0.4rem 0.25rem 0.7rem;
+}
+
+.network-switcher span {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.network-switcher select {
+  border: none;
+  margin: 0;
+  padding: 0.15rem 0.2rem;
+}
+
+.mainnet-warning {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  color: var(--warning-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  padding: 0.7rem 1rem;
+}
+
+/* ── Mobile responsive layout ─────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .container { padding: 1rem 0.75rem; }
+
+  header {
+    padding: 1.5rem 0.75rem 1rem;
+    margin-bottom: 1rem;
+  }
+
+  header h1 { font-size: 1.5rem; }
+  header p  { font-size: 0.85rem; }
+
+  header > div {
+    position: static !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.5rem !important;
+    align-items: stretch !important;
+    margin-top: 1rem;
+  }
+
+  header > div > button {
+    width: 100%;
+  }
+
+  .card {
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .card h2 { font-size: 1rem; }
+
+  input, textarea {
+    font-size: 16px;
+  }
+
+  button {
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+  }
+
+  .tabs {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .tab {
+    flex: 1;
+    min-width: 120px;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+  }
+
+  .badge {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+  }
+
+  .result {
+    font-size: 0.75rem;
+    padding: 0.5rem;
+  }
+}
+
+@media (max-width: 414px) {
+  .container { padding: 0.75rem 0.5rem; }
+
+  header {
+    padding: 1rem 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  header h1 { font-size: 1.25rem; }
+  header p  { font-size: 0.8rem; }
+
+  .card {
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  button {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+  }
+
+  .tab {
+    min-width: 100px;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  input, textarea {
+    padding: 0.5rem 0.6rem;
+    font-size: 16px;
+  }
+}
+
+/* ── Focus rings ─────────────────────────────────────────────────────────────
+   Visible focus indicator for all interactive elements.
+   Uses :focus-visible so mouse users don't see the ring. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Credential cards are divs with role="button" — same ring treatment */
+[role="button"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}

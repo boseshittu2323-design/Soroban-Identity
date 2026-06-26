@@ -25,6 +25,7 @@ Manages DID documents on-chain.
 | Function | Description |
 |---|---|
 | `initialize(admin)` | One-time setup |
+| `transfer_admin(current_admin, new_admin)` | Transfer admin rights (current admin only) |
 | `create_did(controller, metadata)` | Mint a new DID |
 | `update_did(controller, metadata)` | Update metadata |
 | `deactivate_did(controller)` | Soft-delete a DID |
@@ -33,16 +34,18 @@ Manages DID documents on-chain.
 
 ### credential-manager
 
-Issues and verifies verifiable credentials.
+Issues and verifies verifiable credentials. A maximum of **100 issuers** (`MAX_ISSUERS`) can be registered at any time; `add_issuer` panics with `MaxIssuersReached` if the cap is hit.
 
 | Function | Description |
 |---|---|
 | `initialize(admin)` | One-time setup |
+| `transfer_admin(current_admin, new_admin)` | Transfer admin rights (current admin only) |
 | `add_issuer(issuer)` | Register a trusted issuer (admin) |
 | `remove_issuer(issuer)` | Remove an issuer (admin) |
-| `issue_credential(...)` | Issue a credential |
+| `issue_credential(issuer, subject, type, claims, claims_hash, sig, expires)` | Issue a credential |
 | `revoke_credential(issuer, id)` | Revoke a credential |
 | `verify_credential(id)` | Check validity |
+| `verify_claims_hash(id, hash)` | Verify off-chain claims hash matches stored hash |
 | `get_credential(id)` | Fetch full credential |
 
 ## DID Format
@@ -69,8 +72,25 @@ Issuer                Subject               Verifier
 ## Privacy
 
 - Claims are stored on-chain as key-value pairs (public by default)
-- For sensitive data, store an IPFS CID or encrypted reference in claims
+- For sensitive data, pass a SHA-256 hash of the off-chain claims payload as `claims_hash` to `issue_credential`; the raw claims can be stored off-chain (e.g. IPFS or encrypted storage) and verified on-chain with `verify_claims_hash(id, hash)`
 - ZKP integration is planned for selective disclosure without revealing raw claims
+
+## Contract Events
+
+### identity-registry
+
+| Event topic | Payload | Emitted by |
+|---|---|---|
+| `(IDENTITY, "created")` | `(controller: Address, timestamp: u64)` | `create_did` |
+| `(IDENTITY, "updated")` | `(controller: Address, metadata_hash: BytesN<32>)` | `update_did` |
+| `(IDENTITY, "deactivated")` | `(controller: Address, timestamp: u64)` | `deactivate_did` |
+
+### credential-manager
+
+| Event topic | Payload | Emitted by |
+|---|---|---|
+| `(CRED, "issued")` | `(id: BytesN<32>, subject: Address, issuer: Address, type: CredentialType)` | `issue_credential` |
+| `(CRED, "revoked")` | `(id: BytesN<32>, issuer: Address)` | `revoke_credential` |
 
 ## Storage
 

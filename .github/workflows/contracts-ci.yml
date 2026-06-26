@@ -1,6 +1,7 @@
 name: Contracts CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -10,6 +11,68 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    name: Clippy Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Cache Rust toolchain and Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            contracts/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run clippy
+        working-directory: contracts
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  format:
+    name: Rustfmt Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+
+      - name: Cache Rust toolchain and Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            contracts/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        working-directory: contracts
+        run: cargo fmt --check
+
   build-and-test:
     name: Build & Test Soroban Contracts
     runs-on: ubuntu-latest
@@ -31,23 +94,37 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            Soroban-Identity/contracts/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Soroban-Identity/contracts/**/Cargo.lock') }}
+            contracts/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       - name: Build all contracts (wasm32)
-        working-directory: Soroban-Identity/contracts
+        working-directory: contracts
         run: cargo build --target wasm32-unknown-unknown --release
 
       - name: Test identity-registry
-        working-directory: Soroban-Identity/contracts/identity-registry
+        working-directory: contracts/identity-registry
         run: cargo test
 
       - name: Test credential-manager
-        working-directory: Soroban-Identity/contracts/credential-manager
+        working-directory: contracts/credential-manager
         run: cargo test
 
       - name: Test reputation
-        working-directory: Soroban-Identity/contracts/reputation
+        working-directory: contracts/reputation
         run: cargo test
+
+  post-deployment-health-check:
+    name: Post-deployment Health Check
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify deployed contracts through server health endpoint
+        env:
+          SERVER_HEALTH_URL: ${{ secrets.SERVER_HEALTH_URL }}
+        run: scripts/post_deploy_health_check.sh

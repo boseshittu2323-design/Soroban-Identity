@@ -71,6 +71,7 @@ Before opening a PR:
 - [ ] Commits follow Conventional Commits format
 - [ ] SDK tests pass (`npm test` in `sdk/`)
 - [ ] No TypeScript errors (`npx tsc --noEmit` in `frontend/`)
+- [ ] **SDK changes**: Update the `[Unreleased]` section in `sdk/CHANGELOG.md`
 - [ ] PR description references the related issue (e.g. `Closes #17`)
 
 ## Linking a PR to an Issue

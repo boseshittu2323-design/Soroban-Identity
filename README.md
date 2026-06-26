@@ -22,21 +22,25 @@ Soroban Identity fixes this by providing a **privacy-preserving identity layer**
 ## Core Features
 
 **Decentralized Identity (DID)**
+
 - Wallet-linked identity profiles using the `did:stellar:` method
 - Unique on-chain identifiers, W3C DID-compatible
 - Portable across multiple dApps
 
 **Verifiable Credentials**
+
 - KYC verification badges issued by trusted entities
 - Proof of reputation, activity, or achievements
 - Cryptographic attestations stored on-chain
 
 **Privacy-Preserving Verification**
+
 - Selective disclosure of identity data
 - Permission-based access to credentials
 - Zero-knowledge proof (ZKP) integration — future-ready
 
 **Reputation Layer**
+
 - On-chain activity scoring via trusted reporters
 - Anti-sybil mechanisms with configurable thresholds
 - Trust signals for marketplaces, DAOs, and DeFi
@@ -53,11 +57,18 @@ soroban-identity/
 │   └── reputation/            # On-chain scoring and anti-sybil checks
 ├── frontend/                  # React + TypeScript dApp (Vite)
 ├── sdk/                       # TypeScript SDK for dApp integration
+├── server/                    # Operational API, expiry jobs, health, and metrics
 ├── scripts/
 │   └── deploy.sh              # Build + deploy all contracts to testnet
 └── docs/
     └── architecture.md        # Protocol architecture deep-dive
 ```
+
+---
+
+## Server Operations
+
+The `server/` package provides contract health checks, protected admin issuer management, credential expiry reporting and notifications, and Prometheus metrics. See [`docs/server-operations.md`](docs/server-operations.md) for configuration and scrape examples.
 
 ---
 
@@ -67,41 +78,41 @@ soroban-identity/
 
 Manages W3C-aligned DID documents on-chain.
 
-| Function | Description |
-|---|---|
-| `initialize(admin)` | One-time setup |
+| Function                           | Description                 |
+| ---------------------------------- | --------------------------- |
+| `initialize(admin)`                | One-time setup              |
 | `create_did(controller, metadata)` | Mint a new DID for a wallet |
-| `update_did(controller, metadata)` | Update DID metadata |
-| `deactivate_did(controller)` | Soft-delete a DID |
-| `resolve_did(controller)` | Fetch a full DID document |
-| `has_active_did(controller)` | Boolean active check |
+| `update_did(controller, metadata)` | Update DID metadata         |
+| `deactivate_did(controller)`       | Soft-delete a DID           |
+| `resolve_did(controller)`          | Fetch a full DID document   |
+| `has_active_did(controller)`       | Boolean active check        |
 
 ### `credential-manager`
 
 Issues and verifies verifiable credentials.
 
-| Function | Description |
-|---|---|
-| `initialize(admin)` | One-time setup |
-| `add_issuer(issuer)` | Register a trusted issuer (admin only) |
-| `remove_issuer(issuer)` | Remove an issuer (admin only) |
-| `issue_credential(issuer, subject, type, claims, sig, expires)` | Issue a credential |
-| `revoke_credential(issuer, id)` | Revoke a credential |
-| `verify_credential(id)` | Check if a credential is valid and not expired |
-| `get_credential(id)` | Fetch full credential data |
+| Function                                                        | Description                                    |
+| --------------------------------------------------------------- | ---------------------------------------------- |
+| `initialize(admin)`                                             | One-time setup                                 |
+| `add_issuer(issuer)`                                            | Register a trusted issuer (admin only)         |
+| `remove_issuer(issuer)`                                         | Remove an issuer (admin only)                  |
+| `issue_credential(issuer, subject, type, claims, sig, expires)` | Issue a credential                             |
+| `revoke_credential(issuer, id)`                                 | Revoke a credential                            |
+| `verify_credential(id)`                                         | Check if a credential is valid and not expired |
+| `get_credential(id)`                                            | Fetch full credential data                     |
 
 ### `reputation`
 
 On-chain activity scoring and anti-sybil layer.
 
-| Function | Description |
-|---|---|
-| `initialize(admin)` | One-time setup |
-| `add_reporter(reporter)` | Register a trusted reporter (admin only) |
-| `submit_score(reporter, subject, delta, reason)` | Submit a score delta |
-| `get_reputation(subject)` | Get aggregated reputation record |
-| `get_history(subject, reporter)` | Get score history from a reporter |
-| `passes_sybil_check(subject, min_score, min_reporters)` | Anti-sybil gate |
+| Function                                                | Description                              |
+| ------------------------------------------------------- | ---------------------------------------- |
+| `initialize(admin)`                                     | One-time setup                           |
+| `add_reporter(reporter)`                                | Register a trusted reporter (admin only) |
+| `submit_score(reporter, subject, delta, reason)`        | Submit a score delta                     |
+| `get_reputation(subject)`                               | Get aggregated reputation record         |
+| `get_history(subject, reporter)`                        | Get score history from a reporter        |
+| `passes_sybil_check(subject, min_score, min_reporters)` | Anti-sybil gate                          |
 
 ---
 
@@ -112,6 +123,7 @@ did:stellar:<bech32-stellar-address>
 ```
 
 Example:
+
 ```
 did:stellar:GABC1234XYZ...
 ```
@@ -133,14 +145,35 @@ Issuer                    Subject                  Verifier
 
 ---
 
+## API Reference
+
+The full API contract — SDK and contract operations — is defined in
+[`docs/openapi.yaml`](docs/openapi.yaml) as an OpenAPI 3.0 spec. Each operation
+carries an `x-soroban-contract` extension naming the Soroban contract and
+function it maps to.
+
+Run the spec locally:
+
+```bash
+node scripts/serve-openapi.mjs        # http://localhost:3030/openapi.yaml
+```
+
+Regenerate the SDK's TypeScript types from the spec:
+
+```bash
+npx openapi-typescript docs/openapi.yaml -o sdk/src/openapi-types.ts
+```
+
 ## TypeScript SDK
 
 Install:
+
 ```bash
 cd sdk && npm install
 ```
 
 Usage:
+
 ```ts
 import {
   IdentityClient,
@@ -172,11 +205,19 @@ const doc = await identity.resolveDid("GABC...");
 
 // Verify a credential
 const credentials = new CredentialClient(config);
-const valid = await credentials.verifyCredential("GABC...", "credential-id-hex");
+const valid = await credentials.verifyCredential(
+  "GABC...",
+  "credential-id-hex",
+);
 
 // Check reputation / anti-sybil
 const reputation = new ReputationClient(config);
-const passes = await reputation.passesSybilCheck("GABC...", "GSUBJECT...", 50, 2);
+const passes = await reputation.passesSybilCheck(
+  "GABC...",
+  "GSUBJECT...",
+  50,
+  2,
+);
 ```
 
 ---
@@ -192,6 +233,7 @@ npm run dev
 ```
 
 Features:
+
 - Connect Freighter wallet
 - Resolve any DID by Stellar address
 - Create your own on-chain DID
@@ -219,6 +261,7 @@ cd contracts && cargo build --target wasm32-unknown-unknown --release
 # 3. Deploy to testnet (set your secret key first)
 export STELLAR_SECRET_KEY=S...
 bash scripts/deploy.sh
+# Contract IDs are saved to deployed.env in the repo root (git-ignored)
 
 # 4. Install and run the frontend
 cd frontend && npm install && npm run dev
@@ -226,6 +269,100 @@ cd frontend && npm install && npm run dev
 # 5. Install and build the SDK
 cd sdk && npm install && npm run build
 ```
+
+### Frontend Environment Configuration
+
+The frontend uses environment variables for configuration. Copy `.env.example` to `.env` and fill in the contract IDs after deployment:
+
+```bash
+cd frontend
+cp .env.example .env
+```
+
+Edit `.env` with your deployment values:
+
+```env
+VITE_RPC_URL=https://soroban-testnet.stellar.org
+VITE_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+VITE_IDENTITY_REGISTRY_ID=YOUR_REGISTRY_CONTRACT_ID
+VITE_CREDENTIAL_MANAGER_ID=YOUR_CREDENTIAL_CONTRACT_ID
+VITE_REPUTATION_ID=YOUR_REPUTATION_CONTRACT_ID
+```
+
+**Environment Variables:**
+
+- `VITE_RPC_URL` — Soroban RPC endpoint URL (default: `https://soroban-testnet.stellar.org`)
+- `VITE_NETWORK_PASSPHRASE` — Network passphrase for transaction signing
+- `VITE_IDENTITY_REGISTRY_ID` — Identity registry contract ID (required)
+- `VITE_CREDENTIAL_MANAGER_ID` — Credential manager contract ID (required)
+- `VITE_REPUTATION_ID` — Reputation contract ID (required)
+
+**Note:** `.env` is git-ignored. Only commit `.env.example` to the repository.
+
+### Deployment Configuration
+
+The `scripts/deploy.sh` script supports configurable network and RPC endpoint via environment variables:
+
+```bash
+# Deploy to testnet (default)
+export STELLAR_SECRET_KEY=S...
+bash scripts/deploy.sh
+
+# Deploy to mainnet
+export STELLAR_SECRET_KEY=S...
+export STELLAR_NETWORK=mainnet
+export STELLAR_RPC_URL=https://soroban-mainnet.stellar.org
+bash scripts/deploy.sh
+
+# Deploy to custom network
+export STELLAR_SECRET_KEY=S...
+export STELLAR_NETWORK=custom
+export STELLAR_RPC_URL=https://your-rpc-endpoint.com
+bash scripts/deploy.sh
+```
+
+**Environment Variables:**
+
+- `STELLAR_NETWORK` — Network name (default: `testnet`). Can be `testnet`, `mainnet`, or a custom network name.
+- `STELLAR_RPC_URL` — RPC endpoint URL (default: `https://soroban-testnet.stellar.org`).
+- `STELLAR_SECRET_KEY` — Your Stellar secret key (required). Used to sign transactions and deploy contracts.
+
+### Retry Behavior
+
+The deploy script includes automatic retry with exponential backoff for transient RPC failures (e.g., 503 errors or timeouts):
+
+- **Default max retries:** 3 attempts
+- **Initial delay:** 2 seconds
+- **Backoff:** Delay doubles after each failed attempt (2s → 4s → 8s)
+
+You can configure retry behavior via environment variables:
+
+```bash
+# Use default retry settings
+export STELLAR_SECRET_KEY=S...
+bash scripts/deploy.sh
+
+# Increase max retries for unstable networks
+export STELLAR_SECRET_KEY=S...
+export MAX_RETRIES=5
+bash scripts/deploy.sh
+
+# Increase initial delay for slower networks
+export STELLAR_SECRET_KEY=S...
+export RETRY_DELAY=5
+bash scripts/deploy.sh
+
+# Custom retry configuration
+export STELLAR_SECRET_KEY=S...
+export MAX_RETRIES=4
+export RETRY_DELAY=3
+bash scripts/deploy.sh
+```
+
+**Retry Environment Variables:**
+
+- `MAX_RETRIES` — Maximum number of retry attempts (default: `3`)
+- `RETRY_DELAY` — Initial delay in seconds before first retry (default: `2`)
 
 ---
 
@@ -254,6 +391,40 @@ cd sdk && npm install && npm run build
 
 ---
 
+
+## Server (SSE + DID Resolution)
+
+A Node.js server is available under `/server` to support:
+
+- Real-time contract event streaming over SSE (`GET /events`)
+- W3C DID resolution endpoint (`GET /1.0/identifiers/{did}`)
+- Optional Redis DID document caching (`did:{address}` TTL default `60s`)
+
+Run locally:
+
+```bash
+cd server
+cp .env.example .env
+npm install
+npm start
+```
+
+OpenAPI spec: `server/openapi.json`
+
+### Verbose Logging
+
+The server emits structured JSON logs including `requestId`, method, path, status, and duration.
+
+- Send `X-Request-ID` to propagate your own correlation ID
+- If omitted, the server generates a UUID automatically
+
+In the SDK, you can pass a pluggable logger via `SorobanIdentityConfig.logger` to capture debug-level simulation and submission outcomes.
+
+### Contract Event Schema
+
+See `docs/contract-events.md` for emitted topic/payload formats by contract.
+
+---
 ## Contributing
 
 PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for branch naming, commit style, local setup, and the PR checklist.

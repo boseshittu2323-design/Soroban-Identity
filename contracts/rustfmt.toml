@@ -1,0 +1,3 @@
+# Rust formatting configuration for Soroban contracts
+edition = "2021"
+max_width = 100

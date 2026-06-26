@@ -1,0 +1,85 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Soroban Identity Server API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/1.0/identifiers/{did}": {
+      "get": {
+        "summary": "Resolve a DID document",
+        "description": "W3C DID Resolution endpoint for did:stellar identifiers.",
+        "parameters": [
+          {
+            "name": "did",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "did:stellar:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "DID Resolution response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "didDocument": {
+                      "type": ["object", "null"]
+                    },
+                    "didResolutionMetadata": {
+                      "type": "object"
+                    },
+                    "didDocumentMetadata": {
+                      "type": "object"
+                    }
+                  },
+                  "required": ["didDocument", "didResolutionMetadata", "didDocumentMetadata"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid DID format"
+          },
+          "502": {
+            "description": "Upstream RPC failure"
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "summary": "Stream contract events over SSE",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated topic path, e.g. IDENTITY,updated"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-Sent Event stream"
+          }
+        }
+      }
+    }
+  }
+}

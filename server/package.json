@@ -1,0 +1,14 @@
+{
+  "name": "@soroban-identity/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Operational HTTP service for Soroban Identity contracts",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

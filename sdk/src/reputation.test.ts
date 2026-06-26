@@ -14,6 +14,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     SorobanRpc: {
       ...actual.SorobanRpc,
       Server: vi.fn().mockImplementation(() => ({
+        getHealth: vi.fn().mockResolvedValue({ status: 'healthy' }),
         getAccount: mockGetAccount,
         simulateTransaction: mockSimulateTransaction,
       })),
@@ -33,6 +34,10 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     BASE_FEE: "100",
     nativeToScVal: vi.fn(),
     scValToNative: vi.fn(),
+    StrKey: {
+      isValidEd25519PublicKey: (addr: string) => typeof addr === "string" && addr.startsWith("G"),
+      isValidContract: actual.StrKey.isValidContract.bind(actual.StrKey),
+    },
   };
 });
 
@@ -41,12 +46,58 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
 const config: SorobanIdentityConfig = {
   rpcUrl: "https://soroban-testnet.stellar.org",
   networkPassphrase: "Test SDF Network ; September 2015",
-  identityRegistryId: "CONTRACT_IDENTITY",
-  credentialManagerId: "CONTRACT_CREDENTIAL",
-  reputationId: "CONTRACT_REPUTATION",
+  identityRegistryId: "CBBNTYLY7WH6O3IGUI6BKUYLB5UQOOCNDYW5EL7BY4DJKPZ7SGIRWCSL",
+  credentialManagerId: "CD5MO3M3LYM5JLYXD27ARVECRKQXLJJSNBWMAUJ6ST3F4FXBGGXTJA7T",
+  reputationId: "CBXM5TFFI4DWZ2OQSR37KHVO6OEKTJQTGOQMFTIDFTFUP32COAGW4OPK",
 };
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+describe("ReputationClient.getReporters", () => {
+  let client: ReputationClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new ReputationClient(config);
+  });
+
+  it("returns decoded reporter addresses array on success", async () => {
+    const { scValToNative } = await import("@stellar/stellar-sdk");
+
+    const mockReporters = ["GREPORTER1", "GREPORTER2", "GREPORTER3"];
+
+    (scValToNative as ReturnType<typeof vi.fn>).mockReturnValue(mockReporters);
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: {} } });
+
+    const result = await client.getReporters("GCALLER");
+
+    expect(result).toEqual(mockReporters);
+    expect(result).toHaveLength(3);
+  });
+
+  it("returns an empty array when no reporters are registered", async () => {
+    const { scValToNative } = await import("@stellar/stellar-sdk");
+
+    (scValToNative as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: {} } });
+
+    const result = await client.getReporters("GCALLER");
+
+    expect(result).toEqual([]);
+  });
+
+  it("throws when simulation returns an error", async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: "contract trap" });
+
+    await expect(
+      client.getReporters("GCALLER")
+    ).rejects.toThrow("Simulation failed: contract trap");
+  });
+
+  it("throws InvalidAddress when callerAddress is invalid", async () => {
+    await expect(
+      client.getReporters("bad-address")
+    ).rejects.toThrow("InvalidAddress");
+  });
+});
 
 describe("ReputationClient.getScoreHistory", () => {
   let client: ReputationClient;
@@ -116,5 +167,78 @@ describe("ReputationClient.getScoreHistory", () => {
     await expect(
       client.getScoreHistory("GCALLER", "GSUBJECT", "GREPORTER")
     ).rejects.toThrow("Simulation failed: contract trap");
+  });
+
+  it("throws InvalidAddress when callerAddress is invalid", async () => {
+    await expect(
+      client.getScoreHistory("bad-address", "GSUBJECT", "GREPORTER")
+    ).rejects.toThrow("InvalidAddress");
+  });
+
+  it("throws InvalidAddress when subjectAddress is invalid", async () => {
+    await expect(
+      client.getReputation("GCALLER", "not-valid")
+    ).rejects.toThrow("InvalidAddress");
+  });
+});
+
+describe("ReputationClient.getReputation", () => {
+  let client: ReputationClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new ReputationClient(config);
+  });
+
+  it("returns decoded ReputationRecord on success", async () => {
+    const { scValToNative } = await import("@stellar/stellar-sdk");
+    const mockRecord = { subject: "GSUBJECT", score: 75, reporterCount: 2, updatedAt: 1700000000 };
+    (scValToNative as ReturnType<typeof vi.fn>).mockReturnValue(mockRecord);
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: {} } });
+
+    const result = await client.getReputation("GCALLER", "GSUBJECT");
+    expect(result).toEqual(mockRecord);
+  });
+
+  it("returns default zero record when simulation error indicates no record found", async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: "KeyNotFound" });
+
+    const result = await client.getReputation("GCALLER", "GFRESH_ADDRESS");
+    expect(result).toEqual({ subject: "GFRESH_ADDRESS", score: 0, reporterCount: 0, updatedAt: 0 });
+  });
+
+  it("still throws for genuine network errors", async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: "connection timeout" });
+
+    await expect(
+      client.getReputation("GCALLER", "GSUBJECT")
+    ).rejects.toThrow("Simulation failed: connection timeout");
+  });
+});
+
+describe("ReputationClient.getStorageStats", () => {
+  let client: ReputationClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client = new ReputationClient(config);
+  });
+
+  it("returns decoded stats on success", async () => {
+    const { scValToNative } = await import("@stellar/stellar-sdk");
+    const mockStats = { totalSubjects: 10, totalScoreEntries: 42 };
+    (scValToNative as ReturnType<typeof vi.fn>).mockReturnValue(mockStats);
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: {} } });
+
+    const result = await client.getStorageStats("GCALLER");
+    expect(result).toEqual(mockStats);
+  });
+
+  it("throws when simulation fails", async () => {
+    mockSimulateTransaction.mockResolvedValue({ error: "contract trap" });
+
+    await expect(client.getStorageStats("GCALLER")).rejects.toThrow(
+      "Simulation failed: contract trap"
+    );
   });
 });

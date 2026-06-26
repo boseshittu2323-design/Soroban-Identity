@@ -1,15 +1,9 @@
 import { useState } from "react";
-import type { WalletState, WalletType } from "../hooks/useWallet";
+import type { WalletType } from "../hooks/useWallet";
+import { useWalletContext } from "../context/WalletContext";
 
-interface Props {
-  wallet: WalletState & {
-    connect: (walletType?: WalletType) => void;
-    disconnect: () => void;
-  };
-}
-
-export default function WalletButton({ wallet }: Props) {
-  const { publicKey, connected, connecting, walletType, error, connect, disconnect } = wallet;
+export default function WalletButton() {
+  const { connected, publicKey, connecting, txLoading, error, walletType, connect, disconnect } = useWalletContext();
   const [showPicker, setShowPicker] = useState(false);
 
   const short = (key: string) => `${key.slice(0, 4)}…${key.slice(-4)}`;
@@ -26,12 +20,20 @@ export default function WalletButton({ wallet }: Props) {
           <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
             via {walletType === "walletconnect" ? "WalletConnect" : "Freighter"}
           </span>
-          <span className="badge badge-green">{short(publicKey)}</span>
+          <span className="badge badge-green" title={publicKey} style={{ cursor: "pointer" }}>
+            {short(publicKey)}
+          </span>
           <button
+            className="wallet-button__disconnect"
             onClick={disconnect}
+            disabled={txLoading}
             style={{ background: "transparent", border: "1px solid var(--border-input)", color: "var(--text-muted)", padding: "0.3rem 0.7rem" }}
           >
-            Disconnect
+            {txLoading ? (
+              <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <span className="spinner" aria-hidden="true" /> Transaction pending…
+              </span>
+            ) : "Disconnect"}
           </button>
         </div>
       ) : (
@@ -76,7 +78,19 @@ export default function WalletButton({ wallet }: Props) {
       )}
 
       {error && (
-        <span style={{ fontSize: "0.75rem", color: "var(--error-text)" }}>{error}</span>
+        <span style={{ fontSize: "0.75rem", color: "var(--error-text)" }}>
+          {(() => {
+            const msg = error instanceof Error ? error.message : typeof error === "string" && error ? error : "Wallet connection failed. Please try again.";
+            return msg.toLowerCase().includes("freighter not found") ? (
+              <>Freighter not installed.{" "}
+                <a href="https://freighter.app" target="_blank" rel="noopener noreferrer"
+                  style={{ color: "var(--accent-light)", textDecoration: "underline" }}>
+                  Install it here
+                </a>
+              </>
+            ) : msg;
+          })()}
+        </span>
       )}
     </div>
   );
