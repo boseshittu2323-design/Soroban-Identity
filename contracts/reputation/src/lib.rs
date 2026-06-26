@@ -17,6 +17,7 @@ pub const CONTRACT_VERSION: u32 = 1;
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
+const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const REPORTER: Symbol = symbol_short!("REPORTER");
 const DEF_THRESH: Symbol = symbol_short!("DEFTHRESH");
 const SUBJECT_CNT: Symbol = symbol_short!("SUBCNT");
@@ -36,6 +37,8 @@ pub enum ContractError {
     ReasonTooLong = 4,
     NotInitialized = 5,
     Unauthorized = 6,
+    NoPendingAdmin = 7,
+    NotPendingAdmin = 8,
 }
 
 /// Schema version stamped on every emitted event. Increment on breaking schema changes
@@ -153,6 +156,68 @@ impl Reputation {
         Ok(())
     }
 
+    /// Proposes a new admin via two-step transfer (admin only).
+    ///
+    /// The proposed admin must subsequently call [`Self::accept_admin`] to complete
+    /// the transfer. This prevents accidental transfers to uncontrolled addresses.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// Returns [`ContractError::Unauthorized`] if `admin` is not the current admin.
+    pub fn propose_admin(
+        env: Env,
+        admin: Address,
+        proposed: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
+        if stored != admin {
+            return Err(ContractError::Unauthorized);
+        }
+        env.storage().instance().set(&PENDING_ADMIN, &proposed);
+        env.events().publish(
+            (ADMIN, symbol_short!("proposed")),
+            (EVENT_VERSION, admin, proposed),
+        );
+        Ok(())
+    }
+
+    /// Accepts a pending admin proposal (proposed admin only).
+    ///
+    /// Must be called by the address previously nominated via [`Self::propose_admin`].
+    /// Completes the two-step admin transfer and clears the pending slot.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NoPendingAdmin`] if no admin proposal is pending.
+    /// Returns [`ContractError::NotPendingAdmin`] if the caller is not the proposed admin.
+    pub fn accept_admin(env: Env, proposed: Address) -> Result<(), ContractError> {
+        proposed.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&PENDING_ADMIN)
+            .ok_or(ContractError::NoPendingAdmin)?;
+        if pending != proposed {
+            return Err(ContractError::NotPendingAdmin);
+        }
+        env.storage().instance().remove(&PENDING_ADMIN);
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
+        env.storage().instance().set(&ADMIN, &proposed);
+        env.events().publish(
+            (ADMIN, symbol_short!("accepted")),
+            (EVENT_VERSION, old_admin, proposed),
+        );
+        Ok(())
+    }
+
     /// Transfers admin rights to a new address. Only the current admin can call this.
     ///
     /// # Arguments
@@ -248,6 +313,44 @@ impl Reputation {
             (REPORTER, symbol_short!("removed")),
             (EVENT_VERSION, reporter, env.ledger().timestamp()),
         );
+        Ok(())
+    }
+
+    /// Removes a specific reporter's history for a subject and decrements reporter_count (admin only).
+    ///
+    /// Used to invalidate contributions from a compromised reporter address for a
+    /// particular subject. Clears the per-(subject, reporter) history entry and
+    /// decrements `reporter_count` on the subject's [`ReputationRecord`] with
+    /// saturation at zero.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `subject` - The subject address whose record to update.
+    /// * `reporter` - The reporter whose history entry to remove.
+    pub fn remove_subject_reporter(
+        env: Env,
+        subject: Address,
+        reporter: Address,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let history_key = Self::history_key(&subject, &reporter);
+        if env.storage().persistent().has(&history_key) {
+            env.storage().persistent().remove(&history_key);
+            let rec_key = Self::record_key(&subject);
+            if let Some(mut record) = env
+                .storage()
+                .persistent()
+                .get::<(Symbol, Address), ReputationRecord>(&rec_key)
+            {
+                record.reporter_count = record.reporter_count.saturating_sub(1);
+                env.storage().persistent().set(&rec_key, &record);
+                env.storage().persistent().extend_ttl(&rec_key, TTL_MAX, TTL_MAX);
+            }
+            env.events().publish(
+                (REPORTER, symbol_short!("removed")),
+                (EVENT_VERSION, subject, reporter),
+            );
+        }
         Ok(())
     }
 

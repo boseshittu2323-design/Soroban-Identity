@@ -168,6 +168,23 @@ export class SorobanClient {
   }
 }
 
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const stdout = stdoutChunks.join('');
+      const stderr = stderrChunks.join('').slice(0, 4096);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`command failed: ${stderr || stdout || `exit code ${code}`}`));
+    });
+  });
+}
+
 function parseAddressList(raw) {
   const matches = raw.match(/G[A-Z0-9]{55}/g);
   return matches ? [...new Set(matches)] : [];

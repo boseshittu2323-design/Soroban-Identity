@@ -16,6 +16,7 @@ const EVENT_VERSION: u32 = 1;
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
+const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
 const CRED: Symbol = symbol_short!("CRED");
 const SUBJECT: Symbol = symbol_short!("sub");
@@ -41,6 +42,8 @@ pub enum ContractError {
     Unauthorized = 7,
     MaxIssuersReached = 8,
     CredentialExpired = 9,
+    NoPendingAdmin = 10,
+    NotPendingAdmin = 11,
 }
 
 /// ~1 year in ledgers (5-second ledger close time). Used as the max TTL cap.
@@ -183,6 +186,68 @@ impl CredentialManager {
         env.events().publish(
             (ADMIN, symbol_short!("transfer")),
             (EVENT_VERSION, current_admin, new_admin),
+        );
+        Ok(())
+    }
+
+    /// Proposes a new admin via two-step transfer (admin only).
+    ///
+    /// The proposed admin must subsequently call [`Self::accept_admin`] to complete
+    /// the transfer. This prevents accidental transfers to uncontrolled addresses.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// Returns [`ContractError::Unauthorized`] if `admin` is not the current admin.
+    pub fn propose_admin(
+        env: Env,
+        admin: Address,
+        proposed: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
+        if stored != admin {
+            return Err(ContractError::Unauthorized);
+        }
+        env.storage().instance().set(&PENDING_ADMIN, &proposed);
+        env.events().publish(
+            (ADMIN, symbol_short!("proposed")),
+            (EVENT_VERSION, admin, proposed),
+        );
+        Ok(())
+    }
+
+    /// Accepts a pending admin proposal (proposed admin only).
+    ///
+    /// Must be called by the address previously nominated via [`Self::propose_admin`].
+    /// Completes the two-step admin transfer and clears the pending slot.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NoPendingAdmin`] if no admin proposal is pending.
+    /// Returns [`ContractError::NotPendingAdmin`] if the caller is not the proposed admin.
+    pub fn accept_admin(env: Env, proposed: Address) -> Result<(), ContractError> {
+        proposed.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&PENDING_ADMIN)
+            .ok_or(ContractError::NoPendingAdmin)?;
+        if pending != proposed {
+            return Err(ContractError::NotPendingAdmin);
+        }
+        env.storage().instance().remove(&PENDING_ADMIN);
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
+        env.storage().instance().set(&ADMIN, &proposed);
+        env.events().publish(
+            (ADMIN, symbol_short!("accepted")),
+            (EVENT_VERSION, old_admin, proposed),
         );
         Ok(())
     }
