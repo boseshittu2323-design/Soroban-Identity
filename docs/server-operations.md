@@ -9,6 +9,9 @@ The `server/` package exposes operational endpoints for deployed Soroban Identit
 | `PORT` | HTTP listen port. | `3001` |
 | `ADMIN_API_KEY` | Required `x-api-key` or Bearer token for `/admin/*` routes. | unset |
 | `ADMIN_ACTOR` | Default actor written to the issuer audit log. | `admin` |
+| `DATA_DIR` | Base directory for local file storage. | `data` (in project folder) |
+| `AUDIT_LOG_PATH` | Base file path prefix for daily rotated audit logs. | `data/audit` |
+| `AUDIT_LOG_RETENTION_DAYS` | Number of days to retain daily audit log files. | `30` |
 | `STELLAR_SOURCE_ACCOUNT` / `STELLAR_SECRET_KEY` | Source account used by Stellar CLI contract invocations. | unset |
 | `STELLAR_NETWORK` | Stellar network passphrase alias used by the CLI. | `testnet` |
 | `STELLAR_RPC_URL` | Soroban RPC URL. | testnet RPC |
@@ -19,6 +22,21 @@ The `server/` package exposes operational endpoints for deployed Soroban Identit
 | `EXPIRY_JOB_INTERVAL_MS` | Background expiry job interval. | `3600000` |
 | `NOTIFICATION_WEBHOOK_URL` | Default webhook receiving credential expiry warnings. | unset |
 | `SUBJECT_NOTIFICATION_WEBHOOKS` | JSON map of subject address to webhook URL. | `{}` |
+
+## Audit Logging
+
+Issuer administration actions (such as adding or removing registered issuers) append entry logs to NDJSON (Newline Delimited JSON) files.
+
+### Log File Naming Scheme
+The active log file path is derived by appending the current UTC date to the configured `AUDIT_LOG_PATH` base path:
+`audit-YYYY-MM-DD.ndjson`
+
+* Entries written on **Day 1** are stored in `audit-YYYY-MM-Day1.ndjson`.
+* Entries written on **Day 2** are stored in `audit-YYYY-MM-Day2.ndjson`.
+* Rotation happens dynamically at midnight UTC on the write path.
+
+### Retention Policy
+On server startup, old audit files that exceed the `AUDIT_LOG_RETENTION_DAYS` retention limit (default: 30 days) are automatically deleted from disk.
 
 ## Endpoints
 
