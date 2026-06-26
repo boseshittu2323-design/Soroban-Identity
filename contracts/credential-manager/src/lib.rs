@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
     Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
@@ -10,6 +10,18 @@ use soroban_sdk::{
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
 const CRED: Symbol = symbol_short!("CRED");
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CredentialError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    NotFound = 3,
+    Unauthorized = 4,
+    NotAnIssuer = 5,
+}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -56,33 +68,36 @@ pub struct CredentialManager;
 impl CredentialManager {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), CredentialError> {
         if env.storage().instance().has(&ADMIN) {
-            panic!("already initialized");
+            return Err(CredentialError::AlreadyInitialized);
         }
         env.storage().instance().set(&ADMIN, &admin);
+        Ok(())
     }
 
     /// Register a trusted issuer (admin only).
-    pub fn add_issuer(env: Env, issuer: Address) {
-        Self::require_admin(&env);
+    pub fn add_issuer(env: Env, issuer: Address) -> Result<(), CredentialError> {
+        Self::require_admin(&env)?;
         let mut issuers = Self::get_issuers(&env);
         if !issuers.contains(&issuer) {
             issuers.push_back(issuer.clone());
             env.storage().instance().set(&ISSUER, &issuers);
             env.events().publish((ISSUER, symbol_short!("added")), issuer);
         }
+        Ok(())
     }
 
     /// Remove a trusted issuer (admin only).
-    pub fn remove_issuer(env: Env, issuer: Address) {
-        Self::require_admin(&env);
+    pub fn remove_issuer(env: Env, issuer: Address) -> Result<(), CredentialError> {
+        Self::require_admin(&env)?;
         let issuers = Self::get_issuers(&env);
         let updated: Vec<Address> = issuers
             .iter()
             .filter(|i| i != issuer)
             .collect();
         env.storage().instance().set(&ISSUER, &updated);
+        Ok(())
     }
 
     // ── Credential lifecycle ──────────────────────────────────────────────────
@@ -96,9 +111,9 @@ impl CredentialManager {
         claims: Map<String, String>,
         signature: Bytes,
         expires_at: u64,
-    ) -> BytesN<32> {
+    ) -> Result<BytesN<32>, CredentialError> {
         issuer.require_auth();
-        Self::require_issuer(&env, &issuer);
+        Self::require_issuer(&env, &issuer)?;
 
         let now = env.ledger().timestamp();
         let id = Self::generate_id(&env, &issuer, &subject, now);
@@ -118,7 +133,6 @@ impl CredentialManager {
         let key = Self::cred_key(&env, &id);
         env.storage().persistent().set(&key, &credential);
 
-        // Index credential under subject
         let mut subject_creds = Self::get_subject_credentials(&env, &subject);
         subject_creds.push_back(id.clone());
         let subject_key = Self::subject_key(&env, &subject);
@@ -126,11 +140,11 @@ impl CredentialManager {
 
         env.events().publish((CRED, symbol_short!("issued")), (issuer, subject));
 
-        id
+        Ok(id)
     }
 
     /// Revoke a credential. Only the original issuer can revoke.
-    pub fn revoke_credential(env: Env, issuer: Address, credential_id: BytesN<32>) {
+    pub fn revoke_credential(env: Env, issuer: Address, credential_id: BytesN<32>) -> Result<(), CredentialError> {
         issuer.require_auth();
 
         let key = Self::cred_key(&env, &credential_id);
@@ -138,15 +152,16 @@ impl CredentialManager {
             .storage()
             .persistent()
             .get(&key)
-            .expect("credential not found");
+            .ok_or(CredentialError::NotFound)?;
 
         if cred.issuer != issuer {
-            panic!("only the issuer can revoke");
+            return Err(CredentialError::Unauthorized);
         }
 
         cred.revoked = true;
         env.storage().persistent().set(&key, &cred);
         env.events().publish((CRED, symbol_short!("revoked")), credential_id);
+        Ok(())
     }
 
     /// Verify a credential is valid (not revoked, not expired).
@@ -167,12 +182,12 @@ impl CredentialManager {
     }
 
     /// Get a credential by ID.
-    pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Credential {
+    pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Result<Credential, CredentialError> {
         let key = Self::cred_key(&env, &credential_id);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("credential not found")
+            .ok_or(CredentialError::NotFound)
     }
 
     /// List all credential IDs for a subject.
@@ -186,16 +201,18 @@ impl CredentialManager {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+    fn require_admin(env: &Env) -> Result<(), CredentialError> {
+        let admin: Address = env.storage().instance().get(&ADMIN).ok_or(CredentialError::NotInitialized)?;
         admin.require_auth();
+        Ok(())
     }
 
-    fn require_issuer(env: &Env, issuer: &Address) {
+    fn require_issuer(env: &Env, issuer: &Address) -> Result<(), CredentialError> {
         let issuers = Self::get_issuers(env);
         if !issuers.contains(issuer) {
-            panic!("not a registered issuer");
+            return Err(CredentialError::NotAnIssuer);
         }
+        Ok(())
     }
 
     fn get_issuers(env: &Env) -> Vec<Address> {
@@ -285,5 +302,23 @@ mod tests {
 
         client.revoke_credential(&issuer, &cred_id);
         assert!(!client.verify_credential(&cred_id));
+    }
+
+    #[test]
+    fn test_error_variants() {
+        let (env, admin, client) = setup();
+
+        assert_eq!(client.try_initialize(&admin), Err(Ok(CredentialError::AlreadyInitialized)));
+
+        let fake_id = BytesN::from_array(&env, &[1u8; 32]);
+        assert_eq!(client.try_get_credential(&fake_id), Err(Ok(CredentialError::NotFound)));
+
+        let rando = Address::generate(&env);
+        let claims: Map<String, String> = Map::new(&env);
+        let sig = Bytes::from_array(&env, &[0u8; 64]);
+        assert_eq!(
+            client.try_issue_credential(&rando, &rando, &CredentialType::Kyc, &claims, &sig, &0u64),
+            Err(Ok(CredentialError::NotAnIssuer))
+        );
     }
 }

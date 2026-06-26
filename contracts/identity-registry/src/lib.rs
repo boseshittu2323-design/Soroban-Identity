@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
     Address, Bytes, Env, Map, String, Symbol,
 };
 
@@ -9,6 +9,17 @@ use soroban_sdk::{
 
 const IDENTITY: Symbol = symbol_short!("IDENTITY");
 const ADMIN: Symbol = symbol_short!("ADMIN");
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IdentityError {
+    AlreadyInitialized = 1,
+    AlreadyExists = 2,
+    NotFound = 3,
+    Unauthorized = 4,
+}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -40,24 +51,25 @@ impl IdentityRegistry {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     /// Initialize the registry with an admin address.
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), IdentityError> {
         if env.storage().instance().has(&ADMIN) {
-            panic!("already initialized");
+            return Err(IdentityError::AlreadyInitialized);
         }
         env.storage().instance().set(&ADMIN, &admin);
+        Ok(())
     }
 
     // ── DID management ────────────────────────────────────────────────────────
 
     /// Create a new DID for the caller.
-    pub fn create_did(env: Env, controller: Address, metadata: Map<String, String>) -> String {
+    pub fn create_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<String, IdentityError> {
         controller.require_auth();
 
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
 
         if storage.has(&key) {
-            panic!("DID already exists for this address");
+            return Err(IdentityError::AlreadyExists);
         }
 
         let did_id = Self::build_did_id(&env, &controller);
@@ -75,46 +87,48 @@ impl IdentityRegistry {
         storage.set(&key, &doc);
         env.events().publish((IDENTITY, symbol_short!("created")), controller);
 
-        did_id
+        Ok(did_id)
     }
 
     /// Update metadata on an existing DID.
-    pub fn update_did(env: Env, controller: Address, metadata: Map<String, String>) {
+    pub fn update_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<(), IdentityError> {
         controller.require_auth();
 
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
+        let mut doc: DidDocument = storage.get(&key).ok_or(IdentityError::NotFound)?;
 
         doc.metadata = metadata;
         doc.updated_at = env.ledger().timestamp();
 
         storage.set(&key, &doc);
         env.events().publish((IDENTITY, symbol_short!("updated")), controller);
+        Ok(())
     }
 
     /// Deactivate a DID (soft delete).
-    pub fn deactivate_did(env: Env, controller: Address) {
+    pub fn deactivate_did(env: Env, controller: Address) -> Result<(), IdentityError> {
         controller.require_auth();
 
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
+        let mut doc: DidDocument = storage.get(&key).ok_or(IdentityError::NotFound)?;
 
         doc.active = false;
         doc.updated_at = env.ledger().timestamp();
 
         storage.set(&key, &doc);
         env.events().publish((IDENTITY, symbol_short!("deactivated")), controller);
+        Ok(())
     }
 
     /// Resolve a DID document by controller address.
-    pub fn resolve_did(env: Env, controller: Address) -> DidDocument {
+    pub fn resolve_did(env: Env, controller: Address) -> Result<DidDocument, IdentityError> {
         let key = Self::did_key(&env, &controller);
         env.storage()
             .persistent()
             .get(&key)
-            .expect("DID not found")
+            .ok_or(IdentityError::NotFound)
     }
 
     /// Check whether an address has an active DID.
@@ -129,18 +143,14 @@ impl IdentityRegistry {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn did_key(env: &Env, controller: &Address) -> Bytes {
-        // Use the raw address bytes as the storage key
         let mut key = Bytes::new(env);
         key.extend_from_array(&[b'd', b'i', b'd', b':']);
-        // append address bytes — Address implements IntoVal<Env, Bytes> indirectly
-        // so we serialize via the env
         let addr_bytes = controller.to_string().into_bytes();
         key.extend_from_slice(&addr_bytes);
         key
     }
 
     fn build_did_id(env: &Env, controller: &Address) -> String {
-        // did:stellar:<bech32-address>
         let prefix = String::from_str(env, "did:stellar:");
         let addr_str = controller.to_string();
         let mut result = prefix.into_bytes();
@@ -196,5 +206,25 @@ mod tests {
         assert!(client.has_active_did(&user));
         client.deactivate_did(&user);
         assert!(!client.has_active_did(&user));
+    }
+
+    #[test]
+    fn test_error_variants() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        assert_eq!(client.try_initialize(&admin), Err(Ok(IdentityError::AlreadyInitialized)));
+
+        let user = Address::generate(&env);
+        assert_eq!(client.try_resolve_did(&user), Err(Ok(IdentityError::NotFound)));
+
+        let metadata: Map<String, String> = Map::new(&env);
+        client.create_did(&user, &metadata);
+        assert_eq!(client.try_create_did(&user, &metadata), Err(Ok(IdentityError::AlreadyExists)));
     }
 }

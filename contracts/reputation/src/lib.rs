@@ -7,14 +7,24 @@
 //! so scores can be audited or disputed.
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    Address, Env, Map, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
+    Address, Env, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol    = symbol_short!("ADMIN");
 const REPORTER: Symbol = symbol_short!("REPORTER");
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ReputationError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    NotAReporter = 3,
+}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -50,27 +60,30 @@ pub struct Reputation;
 impl Reputation {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ReputationError> {
         if env.storage().instance().has(&ADMIN) {
-            panic!("already initialized");
+            return Err(ReputationError::AlreadyInitialized);
         }
         env.storage().instance().set(&ADMIN, &admin);
+        Ok(())
     }
 
-    pub fn add_reporter(env: Env, reporter: Address) {
-        Self::require_admin(&env);
+    pub fn add_reporter(env: Env, reporter: Address) -> Result<(), ReputationError> {
+        Self::require_admin(&env)?;
         let mut reporters = Self::get_reporters(&env);
         if !reporters.contains(&reporter) {
             reporters.push_back(reporter.clone());
             env.storage().instance().set(&REPORTER, &reporters);
         }
+        Ok(())
     }
 
-    pub fn remove_reporter(env: Env, reporter: Address) {
-        Self::require_admin(&env);
+    pub fn remove_reporter(env: Env, reporter: Address) -> Result<(), ReputationError> {
+        Self::require_admin(&env)?;
         let reporters = Self::get_reporters(&env);
         let updated: Vec<Address> = reporters.iter().filter(|r| r != reporter).collect();
         env.storage().instance().set(&REPORTER, &updated);
+        Ok(())
     }
 
     // ── Scoring ───────────────────────────────────────────────────────────────
@@ -82,13 +95,12 @@ impl Reputation {
         subject: Address,
         delta: i64,
         reason: soroban_sdk::String,
-    ) {
+    ) -> Result<(), ReputationError> {
         reporter.require_auth();
-        Self::require_reporter(&env, &reporter);
+        Self::require_reporter(&env, &reporter)?;
 
         let now = env.ledger().timestamp();
 
-        // Update aggregate record
         let rec_key = Self::record_key(&env, &subject);
         let mut record: ReputationRecord = env
             .storage()
@@ -104,7 +116,6 @@ impl Reputation {
         record.score = record.score.saturating_add(delta);
         record.updated_at = now;
 
-        // Track whether this reporter is new for this subject
         let history_key = Self::history_key(&env, &subject, &reporter);
         let is_new = !env.storage().persistent().has(&history_key);
         if is_new {
@@ -113,7 +124,6 @@ impl Reputation {
 
         env.storage().persistent().set(&rec_key, &record);
 
-        // Append to per-reporter history
         let mut history: Vec<ScoreEntry> = env
             .storage()
             .persistent()
@@ -130,6 +140,8 @@ impl Reputation {
 
         env.events()
             .publish((symbol_short!("SCORE"), symbol_short!("updated")), (reporter, subject, delta));
+
+        Ok(())
     }
 
     /// Get the reputation record for a subject.
@@ -176,15 +188,17 @@ impl Reputation {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+    fn require_admin(env: &Env) -> Result<(), ReputationError> {
+        let admin: Address = env.storage().instance().get(&ADMIN).ok_or(ReputationError::NotInitialized)?;
         admin.require_auth();
+        Ok(())
     }
 
-    fn require_reporter(env: &Env, reporter: &Address) {
+    fn require_reporter(env: &Env, reporter: &Address) -> Result<(), ReputationError> {
         if !Self::get_reporters(env).contains(reporter) {
-            panic!("not a registered reporter");
+            return Err(ReputationError::NotAReporter);
         }
+        Ok(())
     }
 
     fn get_reporters(env: &Env) -> Vec<Address> {
@@ -239,7 +253,7 @@ mod tests {
 
         let rec = client.get_reputation(&subject);
         assert_eq!(rec.score, 75);
-        assert_eq!(rec.reporter_count, 1); // same reporter
+        assert_eq!(rec.reporter_count, 1);
     }
 
     #[test]
@@ -263,9 +277,27 @@ mod tests {
         client.submit_score(&reporter1, &subject, &40, &reason);
         client.submit_score(&reporter2, &subject, &40, &reason);
 
-        // score=80, reporters=2 — should pass
         assert!(client.passes_sybil_check(&subject, &50, &2));
-        // requires 3 reporters — should fail
         assert!(!client.passes_sybil_check(&subject, &50, &3));
+    }
+
+    #[test]
+    fn test_error_variants() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, Reputation);
+        let client = ReputationClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        assert_eq!(client.try_initialize(&admin), Err(Ok(ReputationError::AlreadyInitialized)));
+
+        let rando = Address::generate(&env);
+        let reason = String::from_str(&env, "scam");
+        assert_eq!(
+            client.try_submit_score(&rando, &rando, &10, &reason),
+            Err(Ok(ReputationError::NotAReporter))
+        );
     }
 }

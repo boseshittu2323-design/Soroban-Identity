@@ -10,6 +10,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { DidDocument, SorobanIdentityConfig } from "./types";
+import { parseContractError } from "./errors";
 
 export class IdentityClient {
   private server: SorobanRpc.Server;
@@ -55,8 +56,12 @@ export class IdentityClient {
       throw new Error(`Transaction failed: ${result.status}`);
     }
 
-    const confirmed = await this.waitForConfirmation(result.hash);
-    return scValToNative(confirmed.returnValue!) as string;
+    try {
+      const confirmed = await this.waitForConfirmation(result.hash);
+      return scValToNative(confirmed.returnValue!) as string;
+    } catch (e) {
+      throw parseContractError(e, "identity");
+    }
   }
 
   /**
@@ -80,7 +85,7 @@ export class IdentityClient {
 
     const result = await this.server.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(result)) {
-      throw new Error(`Simulation failed: ${result.error}`);
+      throw parseContractError(result.error, "identity");
     }
 
     return scValToNative(
@@ -111,10 +116,11 @@ export class IdentityClient {
     const result = await this.server.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(result)) return false;
 
-    return scValToNative(
+    const native = scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse)
         .result!.retval
-    ) as boolean;
+    );
+    return typeof native === "boolean" ? native : Boolean(native);
   }
 
   private async waitForConfirmation(
@@ -128,7 +134,7 @@ export class IdentityClient {
         return status as SorobanRpc.Api.GetSuccessfulTransactionResponse;
       }
       if (status.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
-        throw new Error("Transaction failed on-chain");
+        throw parseContractError((status as any).resultXdr || "Transaction failed on-chain", "identity");
       }
     }
     throw new Error("Transaction confirmation timeout");
