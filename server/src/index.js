@@ -1,10 +1,29 @@
 import http from 'node:http';
-import { loadConfig } from './config.js';
+import { loadConfig, validateConfig, logDefaultValues } from './config.js';
 import { createApp } from './app.js';
 import { ensureDataDir } from './storage.js';
 import { ExpiryNotificationJob } from './expiry.js';
 import { MetricsAggregator, MetricsService } from './metrics.js';
 import { SorobanClient } from './soroban.js';
+
+const validationResult = validateConfig();
+if (!validationResult.isValid) {
+  if (validationResult.missing.length > 0) {
+    console.error('[config] Missing required environment variables:');
+    for (const err of validationResult.missing) {
+      console.error(`  - ${err}`);
+    }
+  }
+  if (validationResult.invalid.length > 0) {
+    console.error('[config] Invalid environment variables:');
+    for (const err of validationResult.invalid) {
+      console.error(`  - ${err}`);
+    }
+  }
+  process.exit(1);
+}
+
+logDefaultValues();
 
 const config = loadConfig();
 await ensureDataDir(config);
