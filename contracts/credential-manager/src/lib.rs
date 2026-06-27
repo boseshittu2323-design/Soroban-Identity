@@ -27,6 +27,7 @@ const EVENT_VERSION: u32 = 1;
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
+const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
 const ISSUER_KEY: Symbol = symbol_short!("ISS_KEY");
 const CRED: Symbol = symbol_short!("CRED");
@@ -53,6 +54,8 @@ pub enum ContractError {
     Unauthorized = 7,
     MaxIssuersReached = 8,
     CredentialExpired = 9,
+    NoPendingAdmin = 10,
+    NotPendingAdmin = 11,
 }
 
 /// ~1 year in ledgers (5-second ledger close time). Used as the max TTL cap.
