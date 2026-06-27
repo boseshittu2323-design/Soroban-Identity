@@ -85,3 +85,76 @@ describe("BaseClient.ready (#357)", () => {
     expect(client.ready).toBeInstanceOf(Promise);
   });
 });
+
+import { RequestQueue } from "./request-queue";
+import { ClientDisposedError } from "./errors";
+
+// ─── #419 — RequestQueue.dispose ──────────────────────────────────────────────
+
+describe("RequestQueue.dispose (#419)", () => {
+  it("pending queued requests are rejected with ClientDisposedError", async () => {
+    // maxConcurrent=0 prevents any request from running — all stay queued.
+    const q = new RequestQueue(0);
+    const p1 = q.enqueue(() => Promise.resolve("a"));
+    const p2 = q.enqueue(() => Promise.resolve("b"));
+
+    q.dispose();
+
+    await expect(p1).rejects.toBeInstanceOf(ClientDisposedError);
+    await expect(p2).rejects.toBeInstanceOf(ClientDisposedError);
+  });
+
+  it("new requests submitted after dispose() are immediately rejected", async () => {
+    const q = new RequestQueue(5);
+    q.dispose();
+
+    await expect(q.enqueue(() => Promise.resolve(1))).rejects.toBeInstanceOf(
+      ClientDisposedError
+    );
+  });
+
+  it("dispose() is idempotent — calling twice does not throw", () => {
+    const q = new RequestQueue(5);
+    expect(() => {
+      q.dispose();
+      q.dispose();
+    }).not.toThrow();
+  });
+});
+
+// ─── #419 — BaseClient.dispose ────────────────────────────────────────────────
+
+describe("BaseClient.dispose (#419)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearServerCache();
+    mockGetHealth.mockResolvedValue({ status: "healthy" });
+  });
+
+  it("dispose() sets isDisposed to true", () => {
+    const client = new CredentialClient(config);
+    expect(client.isDisposed).toBe(false);
+    client.dispose();
+    expect(client.isDisposed).toBe(true);
+  });
+
+  it("executeWithFailover rejects with ClientDisposedError after dispose()", async () => {
+    const client = new CredentialClient(config);
+    client.dispose();
+
+    await expect(
+      client.verifyCredential(
+        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        "aabbcc"
+      )
+    ).rejects.toBeInstanceOf(ClientDisposedError);
+  });
+
+  it("dispose() is idempotent on the client", () => {
+    const client = new CredentialClient(config);
+    expect(() => {
+      client.dispose();
+      client.dispose();
+    }).not.toThrow();
+  });
+});

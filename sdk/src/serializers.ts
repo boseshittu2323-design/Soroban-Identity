@@ -1,6 +1,34 @@
 import type { DidDocument } from './types';
 
 /**
+ * Flatten a nested object into dot-notation keys, matching the on-chain XDR
+ * encoding used by the credential-manager contract.
+ *
+ * @example
+ * flattenSubject({ address: { city: 'NYC', zip: '10001' }, name: 'Alice' })
+ * // => { 'address.city': 'NYC', 'address.zip': '10001', name: 'Alice' }
+ *
+ * @param obj    The object to flatten (may be arbitrarily nested).
+ * @param prefix Dot-notation prefix accumulated during recursion.
+ * @returns A new flat `Record<string, string>` with dot-separated keys.
+ */
+export function flattenSubject(
+  obj: Record<string, unknown>,
+  prefix = ''
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      Object.assign(result, flattenSubject(value as Record<string, unknown>, fullKey));
+    } else {
+      result[fullKey] = String(value ?? '');
+    }
+  }
+  return result;
+}
+
+/**
  * Convert a Soroban-Identity {@link DidDocument} into a W3C DID Core 1.0
  * JSON-LD shape.
  *

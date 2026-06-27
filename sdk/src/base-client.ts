@@ -1,6 +1,6 @@
 import { SorobanRpc, Contract } from "@stellar/stellar-sdk";
 import type { SorobanIdentityConfig, SorobanIdentityLogger } from "./types";
-import { SorobanIdentityError } from "./errors";
+import { ClientDisposedError, SorobanIdentityError } from "./errors";
 import { retryWithBackoff } from "./utils";
 
 /** Semantic version of this SDK build — must match package.json `version`. */
@@ -53,6 +53,7 @@ export abstract class BaseClient {
   protected config: SorobanIdentityConfig;
   protected requestQueue: RequestQueue;
   protected logger: SorobanIdentityLogger;
+  private _disposed = false;
 
   /**
    * Resolves when the RPC node reports healthy status; rejects with a
@@ -118,6 +119,31 @@ export abstract class BaseClient {
   }
 
   /**
+   * Dispose this client, rejecting all queued requests with
+   * {@link ClientDisposedError} and preventing new requests from being
+   * submitted.
+   *
+   * Idempotent — calling `dispose()` more than once has no effect.
+   *
+   * @example
+   * ```ts
+   * // On wallet reconnect, dispose the stale client before creating a new one
+   * oldClient.dispose();
+   * const newClient = new CredentialClient(newConfig);
+   * ```
+   */
+  dispose(): void {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.requestQueue.dispose();
+  }
+
+  /** Returns `true` after {@link dispose} has been called. */
+  get isDisposed(): boolean {
+    return this._disposed;
+  }
+
+  /**
    * Execute `fn` against the current RPC server, failing over to the next URL
    * in the pool on 5xx / connection errors. Updates `currentServerIndex` on
    * a successful attempt so future calls prefer the healthy endpoint.
@@ -130,6 +156,9 @@ export abstract class BaseClient {
    * @throws The last error encountered if all servers fail.
    */
   protected async executeWithFailover<T>(fn: (server: SorobanRpc.Server) => Promise<T>): Promise<T> {
+    if (this._disposed) {
+      return Promise.reject(new ClientDisposedError());
+    }
     return this.requestQueue.enqueue(async () => {
       let lastError: any;
 

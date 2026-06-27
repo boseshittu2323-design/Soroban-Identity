@@ -75,3 +75,57 @@ describe('exportDidDocumentAsJsonLd', () => {
     expect(output).toContain('\n  ');
   });
 });
+
+import { flattenSubject } from './serializers';
+
+// ─── #420 — flattenSubject regression ─────────────────────────────────────────
+
+describe('flattenSubject (#420)', () => {
+  it('passes flat string subjects through unchanged', () => {
+    const input = { name: 'Alice', country: 'US' };
+    expect(flattenSubject(input)).toEqual({ name: 'Alice', country: 'US' });
+  });
+
+  it('flattens one level of nesting using dot-notation keys', () => {
+    const input = { address: { city: 'NYC', zip: '10001' } };
+    expect(flattenSubject(input)).toEqual({
+      'address.city': 'NYC',
+      'address.zip': '10001',
+    });
+  });
+
+  it('flattens two levels of nesting', () => {
+    const input = {
+      contact: { address: { city: 'Berlin', country: 'DE' } },
+    };
+    expect(flattenSubject(input)).toEqual({
+      'contact.address.city': 'Berlin',
+      'contact.address.country': 'DE',
+    });
+  });
+
+  it('mixes flat and nested fields', () => {
+    const input = {
+      name: 'Bob',
+      address: { city: 'Paris' },
+    };
+    expect(flattenSubject(input)).toEqual({
+      name: 'Bob',
+      'address.city': 'Paris',
+    });
+  });
+
+  it('produces identical output for flat subjects as direct key access', () => {
+    const flat = { role: 'admin', level: '2' };
+    expect(flattenSubject(flat)).toEqual(flat);
+  });
+
+  it('converts non-string leaf values to strings', () => {
+    // Credentials claims are string→string on-chain, so numeric values must
+    // be coerced the same way the contract does.
+    const input = { score: 42, active: true } as unknown as Record<string, unknown>;
+    const result = flattenSubject(input);
+    expect(result['score']).toBe('42');
+    expect(result['active']).toBe('true');
+  });
+});
