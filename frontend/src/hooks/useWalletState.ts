@@ -1,6 +1,11 @@
 import { useState } from "react";
 import type { WalletType } from "./useWallet";
 
+export interface WalletConnectionError {
+  code: string;
+  message: string;
+}
+
 export interface WalletState {
   publicKey: string | null;
   networkPassphrase: string | null;
@@ -8,7 +13,8 @@ export interface WalletState {
   connecting: boolean;
   txLoading: boolean;
   walletType: WalletType | null;
-  error: string | null;
+  error: string | WalletConnectionError | null;
+  retryCount?: number;
 }
 
 export const DISCONNECTED_STATE: WalletState = {
@@ -19,6 +25,7 @@ export const DISCONNECTED_STATE: WalletState = {
   txLoading: false,
   walletType: null,
   error: null,
+  retryCount: 0,
 };
 
 /**

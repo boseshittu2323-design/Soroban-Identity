@@ -13,7 +13,7 @@ declare global {
       getPublicKey: () => Promise<string>;
       signTransaction: (
         xdr: string,
-        opts?: { networkPassphrase?: string }
+        opts?: { networkPassphrase?: string },
       ) => Promise<string>;
       getNetwork: () => Promise<{
         network: string;
@@ -35,15 +35,23 @@ export type { WalletState } from "./useWalletState";
  * Composes the focused wallet hooks into a single public API.
  *
  * - {@link useWalletState}            — raw state atom
- * - {@link useWalletConnection}       — connect / disconnect / auto-reconnect
+ * - {@link useWalletConnection}       — connect / disconnect / auto-reconnect / retry
  * - {@link useFreighterAccountSync}   — mid-session account-switch detection
  * - {@link useWalletSigning}          — XDR signing
  */
 export function useWallet(networkConfig: FrontendNetworkConfig) {
   const { state, setState } = useWalletState();
 
-  const { connect, disconnect: _disconnect, wcClientRef, wcTopicRef } =
-    useWalletConnection({ networkConfig, setState });
+  const {
+    connect,
+    disconnect: _disconnect,
+    wcClientRef,
+    wcTopicRef,
+    retry,
+    isConnecting,
+    error,
+    retryCount,
+  } = useWalletConnection({ networkConfig, setState });
 
   useFreighterAccountSync({ state, setState });
 
@@ -57,5 +65,14 @@ export function useWallet(networkConfig: FrontendNetworkConfig) {
 
   const disconnect = () => _disconnect(state.walletType);
 
-  return { ...state, connect, disconnect, signTransaction };
+  return {
+    ...state,
+    connect,
+    disconnect,
+    signTransaction,
+    retry,
+    isConnecting,
+    connectionError: error,
+    retryCount,
+  };
 }
