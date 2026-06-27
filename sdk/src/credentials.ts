@@ -5,9 +5,20 @@ import {
   TransactionBuilder,
   BASE_FEE,
   Keypair,
-  nativeToScVal,
-  scValToNative,
 } from "@stellar/stellar-sdk";
+import type { Credential, CredentialType, SorobanIdentityConfig, VerifyResult } from "./types";
+import { executeTransaction, TxOptions } from "./transaction";
+import {
+  encodeAddress,
+  encodeMap,
+  encodeBytes,
+  encodeSymbol,
+  encodeU64,
+  decodeCredential,
+  decodeCredentialId,
+  decodeCredentialIdList,
+  decodeBoolean,
+} from "./codec";
 import { createHash } from "node:crypto";
 import type {
   CallOptions,
@@ -205,6 +216,40 @@ export class CredentialClient extends BaseClient {
   }
 
   /**
+   * Register a trusted issuer and their Ed25519 public key (admin only).
+   */
+  async addIssuer(
+    adminKeypair: Keypair,
+    issuerAddress: string,
+    issuerPublicKeyBytes: Buffer | Uint8Array
+  ): Promise<void> {
+    const account = await this.server.getAccount(adminKeypair.publicKey());
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(
+        this.contract.call(
+          "add_issuer",
+          nativeToScVal(issuerAddress, { type: "address" }),
+          nativeToScVal(Buffer.from(issuerPublicKeyBytes), { type: "bytes" })
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const prepared = await this.server.prepareTransaction(tx);
+    prepared.sign(adminKeypair);
+
+    const result = await this.server.sendTransaction(prepared);
+    if (result.status !== "PENDING") {
+      throw new Error(`Transaction failed: ${result.status}`);
+    }
+    await this.waitForConfirmation(result.hash);
+  }
+
+  /**
    * Issue a credential to a subject. Caller must be a registered issuer.
    *
    * Builds, signs, and submits an `issue_credential` call to the
@@ -240,6 +285,29 @@ export class CredentialClient extends BaseClient {
     subjectAddress: string,
     credentialType: CredentialType,
     claims: Record<string, string>,
+    expiresAt = 0,
+    txOptions?: TxOptions
+  ): Promise<string> {
+    const account = await this.server.getAccount(issuerKeypair.publicKey());
+
+    // Build canonical signed message matching on-chain build_signed_message
+    let msgBuf = Buffer.concat([
+      Buffer.from(issuerKeypair.publicKey(), "utf8"),
+      Buffer.from(subjectAddress, "utf8"),
+    ]);
+    const sortedKeys = Object.keys(claims).sort();
+    for (const k of sortedKeys) {
+      msgBuf = Buffer.concat([
+        msgBuf,
+        Buffer.from(k, "utf8"),
+        Buffer.from(claims[k], "utf8"),
+      ]);
+    }
+
+    const signature = issuerKeypair.sign(msgBuf);
+    const signature = issuerKeypair.sign(
+      Buffer.from(JSON.stringify({ subjectAddress, claims }))
+    );
     claimsHashHex: string,
     expiresAt = 0,
     options?: CallOptions & { nonce?: string; schemaId?: string },
@@ -384,6 +452,13 @@ export class CredentialClient extends BaseClient {
     })
       .addOperation(
         this.contract.call(
+          "issue_credential",
+          encodeAddress(issuerKeypair.publicKey()),
+          encodeAddress(subjectAddress),
+          encodeSymbol(credentialType),
+          encodeMap(claims),
+          encodeBytes(Buffer.from(signature)),
+          encodeU64(expiresAt)
           'revoke_credential',
           ...buildRevokeCredentialArgs({ issuer: issuerKeypair.publicKey(), credentialId: idBytes })
         )
@@ -391,6 +466,14 @@ export class CredentialClient extends BaseClient {
       .setTimeout(timeout)
       .build();
 
+    const confirmed = await executeTransaction(
+      this.server,
+      tx,
+      (t) => t.sign(issuerKeypair),
+      txOptions
+    );
+    const raw = decodeCredentialId(confirmed.returnValue!);
+    return Buffer.from(raw).toString("hex");
     try {
       const prepared = await retryWithBackoff(() => this.server.prepareTransaction(tx));
       prepared.sign(issuerKeypair);
@@ -509,6 +592,7 @@ export class CredentialClient extends BaseClient {
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(
+        this.contract.call("verify_credential", encodeBytes(idBytes))
         this.contract.call(
           "verify_credential",
           ...buildVerifyCredentialArgs({ credentialId: idBytes })
@@ -530,6 +614,7 @@ export class CredentialClient extends BaseClient {
       return { valid: false, reason: 'unknown' };
     }
 
+    const valid = decodeBoolean(
     const retval = scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     );
@@ -538,7 +623,6 @@ export class CredentialClient extends BaseClient {
       return { valid: true };
     }
 
-    // Contract returned false — fetch the credential to determine why
     try {
       const credential = await this.getCredential(callerAddress, credentialId, options);
       if (credential.revoked) return { valid: false, reason: 'revoked' };
@@ -547,6 +631,7 @@ export class CredentialClient extends BaseClient {
       }
       return { valid: false, reason: 'unknown' };
     } catch {
+      return { valid: false, reason: "not_found" };
       return { valid: false, reason: 'unknown' };
     }
   }
@@ -586,6 +671,7 @@ export class CredentialClient extends BaseClient {
       .addOperation(
         this.contract.call(
           "get_subject_credentials",
+          encodeAddress(subjectAddress)
           ...buildGetSubjectCredentialsArgs({ subject: subjectAddress })
         )
       )
@@ -602,6 +688,8 @@ export class CredentialClient extends BaseClient {
       throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, "CONTRACT_ERROR");
     }
 
+    const ids = decodeCredentialIdList(
+      (idsResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     const ids = scValToNative(
       (idsResult as SorobanRpc.Api.SimulateTransactionSuccessResponse)
         .result!.retval
@@ -1174,6 +1262,7 @@ export class CredentialClient extends BaseClient {
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(
+        this.contract.call("get_credential", encodeBytes(idBytes))
         this.contract.call(
           'list_issuer_credentials',
           ...buildListIssuerCredentialsArgs({
@@ -1194,6 +1283,9 @@ export class CredentialClient extends BaseClient {
       throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
     }
 
+    return decodeCredential(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
     const raw = scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
     ) as { items: Uint8Array[]; next_cursor: number | null };

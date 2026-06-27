@@ -5,6 +5,18 @@ import {
   TransactionBuilder,
   BASE_FEE,
   Keypair,
+} from "@stellar/stellar-sdk";
+import type { SorobanIdentityConfig, ReputationRecord, ScoreHistoryEntry } from "./types";
+import { executeTransaction, TxOptions } from "./transaction";
+import {
+  encodeAddress,
+  encodeI64,
+  encodeU32,
+  encodeString,
+  decodeReputationRecord,
+  decodeScoreHistory,
+  decodeBoolean,
+} from "./codec";
   nativeToScVal,
   scValToNative,
 } from '@stellar/stellar-sdk';
@@ -47,12 +59,7 @@ export interface ReputationRecord {
   updatedAt: number;
 }
 
-export interface ScoreHistoryEntry {
-  reporter: string;
-  delta: number;
-  reason: string;
-  submittedAt: number;
-}
+export type { ReputationRecord, ScoreHistoryEntry };
 
 /**
  * Client for the reputation contract.
@@ -189,6 +196,7 @@ export class ReputationClient extends BaseClient {
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(
+        this.contract.call("get_reputation", encodeAddress(subjectAddress))
         this.contract.call(
           'get_reputation',
           ...buildGetReputationArgs({ subject: subjectAddress })
@@ -219,6 +227,9 @@ export class ReputationClient extends BaseClient {
       throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
     }
 
+    return decodeReputationRecord(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!
         .retval
@@ -264,6 +275,11 @@ export class ReputationClient extends BaseClient {
     })
       .addOperation(
         this.contract.call(
+          "get_history",
+          encodeAddress(subjectAddress),
+          encodeAddress(reporterAddress),
+          encodeU32(offset),
+          encodeU32(limit)
           'get_history',
           ...buildGetHistoryArgs({
             subject: subjectAddress,
@@ -286,6 +302,9 @@ export class ReputationClient extends BaseClient {
       throw new SorobanIdentityError(`Simulation failed: ${errMsg}`, 'CONTRACT_ERROR');
     }
 
+    return decodeScoreHistory(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!
         .retval
@@ -371,6 +390,10 @@ export class ReputationClient extends BaseClient {
     })
       .addOperation(
         this.contract.call(
+          "passes_sybil_check",
+          encodeAddress(subjectAddress),
+          encodeI64(minScore),
+          encodeU32(minReporters)
           'passes_sybil_check',
           ...buildPassesSybilCheckArgs({ subject: subjectAddress, minScore: BigInt(minScore), minReporters })
         )
@@ -383,6 +406,9 @@ export class ReputationClient extends BaseClient {
     );
     if (SorobanRpc.Api.isSimulationError(result)) return false;
 
+    return decodeBoolean(
+      (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval
+    );
     return scValToNative(
       (result as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!
         .retval
@@ -410,6 +436,8 @@ export class ReputationClient extends BaseClient {
     subjectAddress: string,
     delta: number,
     reason: string,
+    txOptions?: TxOptions
+  ): Promise<void> {
     options?: CallOptions
   ): Promise<SorobanResponse<WriteResult>> {
     const account = await this.server.getAccount(reporterKeypair.publicKey());
@@ -565,6 +593,11 @@ export class ReputationClient extends BaseClient {
     })
       .addOperation(
         this.contract.call(
+          "submit_score",
+          encodeAddress(reporterKeypair.publicKey()),
+          encodeAddress(subjectAddress),
+          encodeI64(delta),
+          encodeString(reason)
           'list_reporters',
           ...buildListReportersArgs({ cursor: cursorArg, limit: options?.limit ?? 0 })
         )
@@ -572,6 +605,12 @@ export class ReputationClient extends BaseClient {
       .setTimeout(timeout)
       .build();
 
+    await executeTransaction(
+      this.server,
+      tx,
+      (t) => t.sign(reporterKeypair),
+      txOptions
+    );
     const result = await retryWithBackoff(() => this.server.simulateTransaction(tx));
     if (SorobanRpc.Api.isSimulationError(result)) {
       const errMsg = result.error ?? '';
