@@ -4,14 +4,31 @@ import { SorobanRpc } from "@stellar/stellar-sdk";
 import IdentityPanel from "./components/IdentityPanel";
 import CredentialsPanel from "./components/CredentialsPanel";
 import WalletButton from "./components/WalletButton";
+import ErrorBoundary from "./components/ErrorBoundary";
+import Toast from "./components/Toast";
+import { ToastProvider } from "./context/ToastContext";
 import { useWallet } from "./hooks/useWallet";
 import { useCredentialExpiryCheck } from "./hooks/useCredentialExpiryCheck";
-import { checkConnection, TESTNET_CONFIG, IdentityClient, CredentialClient, ReputationClient } from "../../sdk/src/index";
-import { getAppConfig } from "./config";
-import { getActiveNetwork, getNetworkConfig, isMainnet } from "./network";
+import {
+  DEFAULT_NETWORK,
+  NETWORK_CONFIGS,
+  NETWORK_OPTIONS,
+  isMainnet,
+  type NetworkName,
+} from "./network";
+import { checkConnection, IdentityClient, CredentialClient, ReputationClient } from "../../sdk/src/index";
+import { setLocale } from "./i18n";
 import type { Credential } from "../../sdk/src/types";
 
-type Tab = "identity" | "credentials";
+const SUPPORTED_LOCALES: { code: string; label: string }[] = [
+  { code: "en", label: "EN" },
+  { code: "es", label: "ES" },
+];
+
+export enum Tab {
+  Identity = "identity",
+  Credentials = "credentials",
+}
 
 function useDarkMode(): [boolean, () => void] {
   const [isDark, setIsDark] = useState<boolean>(() => {
@@ -31,9 +48,11 @@ function useDarkMode(): [boolean, () => void] {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("identity");
+  const [tab, setTab] = useState<Tab>(Tab.Identity);
+  const [activeNetwork, setActiveNetwork] = useState<NetworkName>(DEFAULT_NETWORK);
   const [verifyId, setVerifyId] = useState<string | null>(null);
-  const wallet = useWallet();
+  const networkConfig = NETWORK_CONFIGS[activeNetwork];
+  const wallet = useWallet(networkConfig);
   const [isDark, toggleDark] = useDarkMode();
   const { t, i18n } = useTranslation();
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
@@ -45,19 +64,19 @@ export default function App() {
     const verifyParam = urlParams.get("verify");
     if (verifyParam) {
       setVerifyId(verifyParam);
-      setTab("credentials");
+      setTab(Tab.Credentials);
     }
   }, []);
 
-  const network = getActiveNetwork();
-  const networkConfig = getNetworkConfig(network);
-  const onMainnet = isMainnet(network);
+  const onMainnet = isMainnet(activeNetwork);
 
   // Check RPC connection health on load
   useEffect(() => {
     const checkRpcHealth = async () => {
-      const config = getAppConfig();
-      const server = new SorobanRpc.Server(config.rpcUrl);
+      const rpcUrl = Array.isArray(networkConfig.rpcUrl)
+        ? networkConfig.rpcUrl[0]
+        : networkConfig.rpcUrl;
+      const server = new SorobanRpc.Server(rpcUrl);
       const healthy = await checkConnection(server);
       setIsConnected(healthy);
     };
@@ -67,10 +86,9 @@ export default function App() {
   // Check contract initialization on load
   useEffect(() => {
     const checkInit = async () => {
-      const config = getAppConfig();
-      const identity = new IdentityClient(config);
-      const credentials = new CredentialClient(config);
-      const reputation = new ReputationClient(config);
+      const identity = new IdentityClient(networkConfig);
+      const credentials = new CredentialClient(networkConfig);
+      const reputation = new ReputationClient(networkConfig);
       const [idOk, credOk, repOk] = await Promise.all([
         identity.isInitialized(),
         credentials.isInitialized(),
@@ -85,25 +103,10 @@ export default function App() {
     checkInit();
   }, [networkConfig.rpcUrl]);
 
-  // Mock fetch — replace with CredentialClient.getCredentialsBySubject() when wired
+  // TODO: integrate SDK — replace with CredentialClient.getCredentialsBySubject() (see issue #226)
   const fetchCredentials = useCallback(
     async (_address: string): Promise<Credential[]> => {
-      await new Promise((r) => setTimeout(r, 200));
-      const now = Math.floor(Date.now() / 1000);
-      return [
-        {
-          id: "abc003",
-          credentialType: "Reputation",
-          subject: _address,
-          issuer: "GISSUER",
-          claims: {},
-          claimsHash: "mockhash",
-          signature: "",
-          issuedAt: now - 100,
-          expiresAt: now + 3 * 24 * 60 * 60,
-          revoked: false,
-        },
-      ];
+      return [];
     },
     [],
   );
@@ -113,14 +116,14 @@ export default function App() {
     fetchCredentials,
   );
 
-  const toggleLang = () => {
-    const next = i18n.language === "en" ? "es" : "en";
-    i18n.changeLanguage(next);
-    localStorage.setItem("lang", next);
+  const handleLocaleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLocale(e.target.value);
   };
 
   return (
-    <div className="container">
+    <ToastProvider>
+      <Toast />
+      <div className="container">
       <header style={{ position: "relative" }}>
         <h1>{t("app.title")}</h1>
         <p>{t("app.subtitle")}</p>
@@ -163,13 +166,29 @@ export default function App() {
               {isConnected ? t("app.networkOnline") : t("app.networkOffline")}
             </div>
           )}
-          <button
-            className="theme-toggle"
-            onClick={toggleLang}
+          <select
+            value={i18n.language}
+            onChange={handleLocaleChange}
             aria-label="Switch language"
+            style={{ padding: "0.3rem 0.5rem", borderRadius: "0.25rem", fontSize: "0.85rem" }}
           >
-            {i18n.language === "en" ? "ES" : "EN"}
-          </button>
+            {SUPPORTED_LOCALES.map(({ code, label }) => (
+              <option key={code} value={code}>{label}</option>
+            ))}
+          </select>
+          <label className="network-switcher" aria-label="Network">
+            <span>Network</span>
+            <select
+              value={activeNetwork}
+              onChange={(e) => setActiveNetwork(e.target.value as NetworkName)}
+            >
+              {NETWORK_OPTIONS.map((network) => (
+                <option key={network.name} value={network.name}>
+                  {network.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             className="theme-toggle"
             onClick={toggleDark}
@@ -266,23 +285,26 @@ export default function App() {
 
       <div className="tabs">
         <button
-          className={`tab ${tab === "identity" ? "active" : ""}`}
-          onClick={() => setTab("identity")}
+          className={`tab ${tab === Tab.Identity ? "active" : ""}`}
+          onClick={() => setTab(Tab.Identity)}
         >
           {t("tabs.identity")}
         </button>
         <button
-          className={`tab ${tab === "credentials" ? "active" : ""}`}
-          onClick={() => setTab("credentials")}
+          className={`tab ${tab === Tab.Credentials ? "active" : ""}`}
+          onClick={() => setTab(Tab.Credentials)}
         >
           {t("tabs.credentials")}
         </button>
       </div>
 
-       {tab === "identity" && <IdentityPanel />}
-       {tab === "credentials" && (
-         <CredentialsPanel verifyId={verifyId} />
-       )}
+      <ErrorBoundary>
+        {tab === Tab.Identity && <IdentityPanel />}
+        {tab === Tab.Credentials && (
+          <CredentialsPanel verifyId={verifyId} />
+        )}
+      </ErrorBoundary>
     </div>
+    </ToastProvider>
   );
 }

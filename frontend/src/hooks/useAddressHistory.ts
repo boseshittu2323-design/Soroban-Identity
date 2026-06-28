@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 
-const STORAGE_KEY = "soroban_identity_address_history";
-const MAX_ENTRIES = 5;
+const STORAGE_KEY = "soroban-identity:addressHistory";
+const MAX_ENTRIES = 10;
 
 export function useAddressHistory() {
   const [history, setHistory] = useState<string[]>([]);

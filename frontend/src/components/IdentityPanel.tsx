@@ -1,14 +1,21 @@
-import { useState, useReducer } from 'react';
+import { useState, useReducer, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { StrKey } from '@stellar/stellar-sdk';
 import type { WalletState } from '../hooks/useWallet';
 import type { ReputationRecord } from '../../../sdk/src/reputation';
 import type { ScoreHistoryEntry } from '../../../sdk/src/reputation';
 import type { DidDocument } from '../../../sdk/src/types';
 import { useAddressHistory } from '../hooks/useAddressHistory';
 import SkeletonCard from './SkeletonCard';
+import FormField from './FormField';
 import ReputationChart from './ReputationChart';
 import { formatTimestamp } from '../utils/formatDate';
+import { handleError, isNetworkError } from '../utils/handleError';
 import { useWalletContext } from '../context/WalletContext';
+import { exportDidDocumentAsJsonLd } from '../../../sdk/src/serializers';
+import { SorobanRpc, TransactionBuilder, BASE_FEE, nativeToScVal, Contract } from '@stellar/stellar-sdk';
+import { IdentityClient, ReputationClient } from '../../../sdk/src';
+import { getNetworkConfig } from '../network';
 
 type IdentityState =
   | { status: 'idle' }
@@ -22,7 +29,7 @@ type IdentityAction =
   | { type: 'FETCH_ERROR'; message: string; errorType: 'network' | 'contract' }
   | { type: 'RESET' };
 
-function identityReducer(state: IdentityState, action: IdentityAction): IdentityState {
+function identityReducer(_state: IdentityState, action: IdentityAction): IdentityState {
   switch (action.type) {
     case 'FETCH_START': return { status: 'loading' };
     case 'FETCH_SUCCESS': return { status: 'success', did: action.did, reputation: action.reputation, scoreHistory: action.scoreHistory };
@@ -34,8 +41,6 @@ function identityReducer(state: IdentityState, action: IdentityAction): Identity
 export default function IdentityPanel() {
   const wallet = useWalletContext();
   const [identityState, dispatch] = useReducer(identityReducer, { status: 'idle' });
-
-  const resolveResult = identityState.status === 'success' ? JSON.stringify(identityState.did, null, 2) : null;
   const resolving = identityState.status === 'loading';
   const networkError = identityState.status === 'error'
     ? { type: identityState.errorType as 'network' | 'contract', message: identityState.message }
@@ -50,6 +55,14 @@ export default function IdentityPanel() {
   const [showHistory, setShowHistory] = useState(false);
   const { history, addAddress, clearHistory } = useAddressHistory();
 
+  const prevConnected = useRef(wallet.connected);
+  useEffect(() => {
+    if (prevConnected.current && !wallet.connected) {
+      clearHistory();
+    }
+    prevConnected.current = wallet.connected;
+  }, [wallet.connected, clearHistory]);
+
   const [createResult, setCreateResult] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -57,6 +70,9 @@ export default function IdentityPanel() {
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
   const [updateSuccess, setUpdateSuccess] = useState(false);
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [editingMetadata, setEditingMetadata] = useState<Array<{ key: string; value: string }>>([]);
+  const [editingFieldErrors, setEditingFieldErrors] = useState<Record<number, string | null>>({});
 
   const [minScore, setMinScore] = useState("50");
   const [minReporters, setMinReporters] = useState("2");
@@ -66,61 +82,43 @@ export default function IdentityPanel() {
   const [showQr, setShowQr] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const isNetworkError = (error: unknown): boolean => {
-    if (error instanceof TypeError) {
-      return error.message.includes("fetch") || error.message.includes("network");
-    }
-    const msg = error instanceof Error ? error.message : String(error);
-    return msg.includes("ECONNREFUSED") || msg.includes("unreachable") || msg.includes("timeout");
-  };
-
   const handleResolve = async () => {
-    if (!resolveAddress.trim()) return;
-    addAddress(resolveAddress);
+    const address = resolveAddress.trim();
+    if (!address) return;
+    
+    // Validate Stellar address format
+    if (!StrKey.isValidEd25519PublicKey(address)) {
+      dispatch({ 
+        type: 'FETCH_ERROR', 
+        message: 'Invalid Stellar address format. Address must start with "G" and be 56 characters long.',
+        errorType: 'contract'
+      });
+      return;
+    }
+    
+    addAddress(address);
     dispatch({ type: 'FETCH_START' });
     setSybilResult(null);
     try {
-      // TODO: wire IdentityClient.resolveDid() from SDK
-      await new Promise((r) => setTimeout(r, 800));
-      const mock: DidDocument = {
-        id: `did:stellar:${resolveAddress}`,
-        controller: resolveAddress,
-        metadata: {},
-        createdAt: Math.floor(Date.now() / 1000),
-        updatedAt: Math.floor(Date.now() / 1000),
-        active: true,
-      };
+      const networkConfig = getNetworkConfig();
+      const identityClient = new IdentityClient(networkConfig);
+      const didDoc = await identityClient.resolveDid(address);
 
       let resolvedRep: ReputationRecord | null = null;
       let resolvedHistory: ScoreHistoryEntry[] = [];
       try {
-        // TODO: wire ReputationClient.getReputation() from SDK
-        await new Promise((r) => setTimeout(r, 600));
-        resolvedRep = {
-          subject: resolveAddress,
-          score: 42,
-          reporterCount: 3,
-          updatedAt: Math.floor(Date.now() / 1000),
-        };
-        // TODO: wire ReputationClient.getScoreHistory() from SDK
-        const now = Math.floor(Date.now() / 1000);
-        resolvedHistory = [
-          { reporter: resolveAddress, delta: 10, reason: "KYC verified", submittedAt: now - 30 * 86400 },
-          { reporter: resolveAddress, delta: -5, reason: "Dispute", submittedAt: now - 20 * 86400 },
-          { reporter: resolveAddress, delta: 20, reason: "Achievement", submittedAt: now - 10 * 86400 },
-          { reporter: resolveAddress, delta: 17, reason: "Referral", submittedAt: now - 3 * 86400 },
-        ];
-      } catch {
+        const reputationClient = new ReputationClient(networkConfig);
+        resolvedRep = await reputationClient.getReputation(address, address);
+        resolvedHistory = await reputationClient.getScoreHistory(address, address, address);
+      } catch (e) {
         // reputation fetch failed — proceed with null
       }
 
-      dispatch({ type: 'FETCH_SUCCESS', did: mock, reputation: resolvedRep, scoreHistory: resolvedHistory });
+      dispatch({ type: 'FETCH_SUCCESS', did: didDoc, reputation: resolvedRep, scoreHistory: resolvedHistory });
     } catch (e: unknown) {
       dispatch({
         type: 'FETCH_ERROR',
-        message: isNetworkError(e)
-          ? "Unable to reach the Soroban network. Please try again later."
-          : (e instanceof Error ? e.message : String(e)),
+        message: handleError(e),
         errorType: isNetworkError(e) ? 'network' : 'contract',
       });
     }
@@ -133,6 +131,17 @@ export default function IdentityPanel() {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'did-document.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportJsonLd = () => {
+    if (!resolvedDoc) return;
+    const blob = new Blob([exportDidDocumentAsJsonLd(resolvedDoc)], { type: 'application/ld+json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'did-document.jsonld';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -169,14 +178,49 @@ export default function IdentityPanel() {
     setCreating(true);
     setCreateResult(null);
     try {
-      // TODO: build tx via IdentityClient, sign via wallet.signTransaction(), submit
-      await new Promise((r) => setTimeout(r, 1000));
-      const mockFee = 100;
+      const networkConfig = getNetworkConfig();
+      const server = new SorobanRpc.Server(typeof networkConfig.rpcUrl === 'string' ? networkConfig.rpcUrl : networkConfig.rpcUrl[0]);
+      const contract = new Contract(networkConfig.identityRegistryId);
+      const account = await server.getAccount(wallet.publicKey);
+      
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: networkConfig.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "create_did",
+            nativeToScVal(wallet.publicKey, { type: "address" }),
+            nativeToScVal({}, { type: "map" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const estimatedFee = parseInt(prepared.fee, 10);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, networkConfig.networkPassphrase);
+      const result = await server.sendTransaction(signedTx as any);
+      
+      if (result.status !== "PENDING") {
+        throw new Error(`Transaction failed: ${result.status}`);
+      }
+      
+      let txStatus = await server.getTransaction(result.hash);
+      while (txStatus.status === "NOT_FOUND") {
+        await new Promise(r => setTimeout(r, 2000));
+        txStatus = await server.getTransaction(result.hash);
+      }
+      if (txStatus.status === "FAILED") {
+        throw new Error("Transaction failed on-chain");
+      }
+      
       setCreateResult(
-        `DID created: did:stellar:${wallet.publicKey}\nEstimated fee: ${mockFee} stroops (${(mockFee / 10_000_000).toFixed(7)} XLM)`
+        `DID created: did:stellar:${wallet.publicKey}\nEstimated fee: ${estimatedFee} stroops (${(estimatedFee / 10_000_000).toFixed(7)} XLM)`
       );
     } catch (e: unknown) {
-      setCreateResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setCreateResult(`Error: ${handleError(e)}`);
     } finally {
       setCreating(false);
     }
@@ -205,22 +249,51 @@ export default function IdentityPanel() {
         }
       });
 
-      // TODO: build update_did tx via IdentityClient with metadata, sign + submit
-      await new Promise((r) => setTimeout(r, 1000));
-      await new Promise((r) => setTimeout(r, 800));
-      const updatedDid: DidDocument = {
-        id: `did:stellar:${wallet.publicKey}`,
-        controller: wallet.publicKey!,
-        metadata,
-        createdAt: Math.floor(Date.now() / 1000),
-        updatedAt: Math.floor(Date.now() / 1000),
-        active: true,
-      };
+      const networkConfig = getNetworkConfig();
+      const server = new SorobanRpc.Server(typeof networkConfig.rpcUrl === 'string' ? networkConfig.rpcUrl : networkConfig.rpcUrl[0]);
+      const contract = new Contract(networkConfig.identityRegistryId);
+      const account = await server.getAccount(wallet.publicKey);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: networkConfig.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "update_did",
+            nativeToScVal(wallet.publicKey, { type: "address" }),
+            nativeToScVal(metadata, { type: "map" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, networkConfig.networkPassphrase);
+      const result = await server.sendTransaction(signedTx as any);
+      
+      if (result.status !== "PENDING") {
+        throw new Error(`Transaction failed: ${result.status}`);
+      }
+      
+      let txStatus = await server.getTransaction(result.hash);
+      while (txStatus.status === "NOT_FOUND") {
+        await new Promise(r => setTimeout(r, 2000));
+        txStatus = await server.getTransaction(result.hash);
+      }
+      if (txStatus.status === "FAILED") {
+        throw new Error("Transaction failed on-chain");
+      }
+      
+      const identityClient = new IdentityClient(networkConfig);
+      const updatedDid = await identityClient.resolveDid(wallet.publicKey);
+      
       dispatch({ type: 'FETCH_SUCCESS', did: updatedDid, reputation: null, scoreHistory: [] });
       setUpdateSuccess(true);
       setTimeout(() => setUpdateSuccess(false), 3000);
     } catch (e: unknown) {
-      setCreateResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setCreateResult(`Error: ${handleError(e)}`);
     } finally {
       setUpdating(false);
     }
@@ -231,15 +304,126 @@ export default function IdentityPanel() {
     setCheckingSybil(true);
     setSybilResult(null);
     try {
-      // TODO: wire ReputationClient.passesSybilCheck() from SDK
-      await new Promise((r) => setTimeout(r, 800));
-      // Mock: passes if minScore <= 100 and minReporters <= 5
-      const passes = Number(minScore) <= 100 && Number(minReporters) <= 5;
+      const networkConfig = getNetworkConfig();
+      const reputationClient = new ReputationClient(networkConfig);
+      const passes = await reputationClient.passesSybilCheck(
+        resolvedAddress,
+        resolvedAddress,
+        Number(minScore),
+        Number(minReporters)
+      );
       setSybilResult(passes);
     } catch (e: unknown) {
       setSybilResult(null);
     } finally {
       setCheckingSybil(false);
+    }
+  };
+
+  const handleEditMetadata = () => {
+    if (resolvedDoc?.metadata) {
+      const entries = Object.entries(resolvedDoc.metadata).map(([key, value]) => ({
+        key,
+        value: String(value),
+      }));
+      setEditingMetadata(entries);
+    }
+    setIsEditingMetadata(true);
+    setEditingFieldErrors({});
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingMetadata(false);
+    setEditingMetadata([]);
+    setEditingFieldErrors({});
+  };
+
+  // Warn user if navigating away while editing
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isEditingMetadata) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isEditingMetadata]);
+
+  const handleSaveMetadata = async () => {
+    if (!wallet.connected || !wallet.publicKey) return;
+
+    // Validate no duplicate keys
+    const keys = editingMetadata.map(e => e.key.trim()).filter(k => k);
+    const uniqueKeys = new Set(keys);
+    if (keys.length !== uniqueKeys.size) {
+      setMetadataError('Duplicate metadata keys are not allowed');
+      return;
+    }
+
+    setMetadataError(null);
+    setUpdating(true);
+    setUpdateSuccess(false);
+    try {
+      // Build metadata object from entries
+      const metadata: Record<string, string> = {};
+      editingMetadata.forEach(entry => {
+        if (entry.key.trim() && entry.value.trim()) {
+          metadata[entry.key.trim()] = entry.value.trim();
+        }
+      });
+
+      const networkConfig = getNetworkConfig();
+      const server = new SorobanRpc.Server(typeof networkConfig.rpcUrl === 'string' ? networkConfig.rpcUrl : networkConfig.rpcUrl[0]);
+      const contract = new Contract(networkConfig.identityRegistryId);
+      const account = await server.getAccount(wallet.publicKey);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: networkConfig.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "update_did",
+            nativeToScVal(wallet.publicKey, { type: "address" }),
+            nativeToScVal(metadata, { type: "map" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const signedXdr = await wallet.signTransaction(prepared.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, networkConfig.networkPassphrase);
+      const result = await server.sendTransaction(signedTx as any);
+      
+      if (result.status !== "PENDING") {
+        throw new Error(`Transaction failed: ${result.status}`);
+      }
+      
+      let txStatus = await server.getTransaction(result.hash);
+      while (txStatus.status === "NOT_FOUND") {
+        await new Promise(r => setTimeout(r, 2000));
+        txStatus = await server.getTransaction(result.hash);
+      }
+      if (txStatus.status === "FAILED") {
+        throw new Error("Transaction failed on-chain");
+      }
+      
+      const identityClient = new IdentityClient(networkConfig);
+      const updatedDid = await identityClient.resolveDid(wallet.publicKey);
+      
+      dispatch({ type: 'FETCH_SUCCESS', did: updatedDid, reputation: null, scoreHistory: [] });
+      setUpdateSuccess(true);
+      setIsEditingMetadata(false);
+      setEditingMetadata([]);
+      setTimeout(() => setUpdateSuccess(false), 3000);
+    } catch (e: unknown) {
+      setMetadataError(`Error: ${handleError(e)}`);
+    } finally {
+      setUpdating(false);
     }
   };
 
@@ -295,7 +479,7 @@ export default function IdentityPanel() {
         <button onClick={handleResolve} disabled={resolving || !resolveAddress}>
           {resolving ? 'Resolving…' : 'Resolve'}
         </button>
-        {resolving && <SkeletonCard rows={4} />}
+        {resolving && <SkeletonCard variant="identity" />}
         {!resolving && resolveResult && (
           <>
             <div style={{ 
@@ -353,6 +537,21 @@ export default function IdentityPanel() {
             >
               Export JSON
             </button>
+            <button
+              onClick={handleExportJsonLd}
+              disabled={!resolvedDoc}
+              style={{ marginLeft: '0.5rem' }}
+            >
+              Export JSON-LD
+            </button>
+            {!isEditingMetadata && resolvedDoc?.metadata && Object.keys(resolvedDoc.metadata).length > 0 && (
+              <button
+                onClick={handleEditMetadata}
+                style={{ marginLeft: '0.5rem' }}
+              >
+                Edit Metadata
+              </button>
+            )}
             {showQr && (
               <div style={{ marginTop: '0.75rem', display: 'inline-block', background: '#fff', padding: '0.5rem', borderRadius: '0.5rem' }}>
                 <QRCodeSVG value={`did:stellar:${resolvedAddress}`} size={180} level="M" />
@@ -394,6 +593,109 @@ export default function IdentityPanel() {
             </p>
           </div>
         )}
+
+        {resolvedDoc?.metadata && Object.keys(resolvedDoc.metadata).length > 0 && (
+          <div
+            className="card"
+            style={{ marginTop: '1rem', background: 'var(--card-bg-accent)', border: '1px solid var(--card-border-accent)' }}
+          >
+            <h3 style={{ marginBottom: '0.5rem', color: 'var(--accent-light)' }}>Metadata</h3>
+            {!isEditingMetadata ? (
+              <>
+                {Object.entries(resolvedDoc.metadata).map(([key, value]) => (
+                  <div key={key} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>{key}:</span>
+                    <span>{String(value)}</span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <div>
+                {editingMetadata.map((entry, idx) => (
+                  <div key={idx} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1 }}>
+                      <input
+                        type="text"
+                        placeholder="Key"
+                        value={entry.key}
+                        onChange={(e) => {
+                          const newEntries = [...editingMetadata];
+                          newEntries[idx].key = e.target.value;
+                          setEditingMetadata(newEntries);
+                        }}
+                        style={{ width: '100%', padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid var(--border-light)', marginBottom: editingFieldErrors[idx] ? '0.25rem' : 0 }}
+                      />
+                      {editingFieldErrors[idx] && (
+                        <p style={{ color: 'var(--error)', fontSize: '0.75rem', margin: '0.25rem 0 0 0' }}>
+                          {editingFieldErrors[idx]}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <input
+                        type="text"
+                        placeholder="Value"
+                        value={entry.value}
+                        onChange={(e) => {
+                          const newEntries = [...editingMetadata];
+                          newEntries[idx].value = e.target.value;
+                          setEditingMetadata(newEntries);
+                        }}
+                        style={{ width: '100%', padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid var(--border-light)' }}
+                      />
+                    </div>
+                  </div>
+                ))}
+                {metadataError && (
+                  <div style={{
+                    marginBottom: '0.75rem',
+                    padding: '0.5rem 1rem',
+                    borderRadius: '0.5rem',
+                    background: 'var(--danger-bg)',
+                    color: 'var(--danger-text)',
+                    border: '1px solid var(--danger-border)',
+                    fontSize: '0.9rem',
+                  }}>
+                    ✕ {metadataError}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+                  <button
+                    onClick={handleSaveMetadata}
+                    disabled={updating}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: 'var(--accent-light)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '0.25rem',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                      opacity: updating ? 0.6 : 1,
+                    }}
+                  >
+                    {updating ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    disabled={updating}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: 'var(--border-input)',
+                      color: 'var(--text-muted)',
+                      border: 'none',
+                      borderRadius: '0.25rem',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -407,30 +709,22 @@ export default function IdentityPanel() {
               </span>
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
-                  Min Score
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={minScore}
-                  onChange={(e) => setMinScore(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
-                  Min Reporters
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={minReporters}
-                  onChange={(e) => setMinReporters(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </div>
+              <FormField
+                label="Min Score"
+                type="number"
+                min={0}
+                value={minScore}
+                onChange={(e) => setMinScore(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <FormField
+                label="Min Reporters"
+                type="number"
+                min={1}
+                value={minReporters}
+                onChange={(e) => setMinReporters(e.target.value)}
+                style={{ flex: 1 }}
+              />
             </div>
             <button onClick={handleSybilCheck} disabled={checkingsSybil}>
               {checkingsSybil ? 'Checking…' : 'Run Sybil Check'}

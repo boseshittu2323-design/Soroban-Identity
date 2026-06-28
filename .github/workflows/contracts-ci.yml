@@ -1,6 +1,7 @@
 name: Contracts CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -113,3 +114,17 @@ jobs:
       - name: Test reputation
         working-directory: contracts/reputation
         run: cargo test
+
+  post-deployment-health-check:
+    name: Post-deployment Health Check
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify deployed contracts through server health endpoint
+        env:
+          SERVER_HEALTH_URL: ${{ secrets.SERVER_HEALTH_URL }}
+        run: scripts/post_deploy_health_check.sh

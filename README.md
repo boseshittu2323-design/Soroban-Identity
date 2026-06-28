@@ -57,11 +57,18 @@ soroban-identity/
 │   └── reputation/            # On-chain scoring and anti-sybil checks
 ├── frontend/                  # React + TypeScript dApp (Vite)
 ├── sdk/                       # TypeScript SDK for dApp integration
+├── server/                    # Operational API, expiry jobs, health, and metrics
 ├── scripts/
 │   └── deploy.sh              # Build + deploy all contracts to testnet
 └── docs/
     └── architecture.md        # Protocol architecture deep-dive
 ```
+
+---
+
+## Server Operations
+
+The `server/` package provides contract health checks, protected admin issuer management, credential expiry reporting and notifications, and Prometheus metrics. See [`docs/server-operations.md`](docs/server-operations.md) for configuration and scrape examples.
 
 ---
 
@@ -137,6 +144,25 @@ Issuer                    Subject                  Verifier
 ```
 
 ---
+
+## API Reference
+
+The full API contract — SDK and contract operations — is defined in
+[`docs/openapi.yaml`](docs/openapi.yaml) as an OpenAPI 3.0 spec. Each operation
+carries an `x-soroban-contract` extension naming the Soroban contract and
+function it maps to.
+
+Run the spec locally:
+
+```bash
+node scripts/serve-openapi.mjs        # http://localhost:3030/openapi.yaml
+```
+
+Regenerate the SDK's TypeScript types from the spec:
+
+```bash
+npx openapi-typescript docs/openapi.yaml -o sdk/src/openapi-types.ts
+```
 
 ## TypeScript SDK
 
@@ -365,6 +391,40 @@ bash scripts/deploy.sh
 
 ---
 
+
+## Server (SSE + DID Resolution)
+
+A Node.js server is available under `/server` to support:
+
+- Real-time contract event streaming over SSE (`GET /events`)
+- W3C DID resolution endpoint (`GET /1.0/identifiers/{did}`)
+- Optional Redis DID document caching (`did:{address}` TTL default `60s`)
+
+Run locally:
+
+```bash
+cd server
+cp .env.example .env
+npm install
+npm start
+```
+
+OpenAPI spec: `server/openapi.json`
+
+### Verbose Logging
+
+The server emits structured JSON logs including `requestId`, method, path, status, and duration.
+
+- Send `X-Request-ID` to propagate your own correlation ID
+- If omitted, the server generates a UUID automatically
+
+In the SDK, you can pass a pluggable logger via `SorobanIdentityConfig.logger` to capture debug-level simulation and submission outcomes.
+
+### Contract Event Schema
+
+See `docs/contract-events.md` for emitted topic/payload formats by contract.
+
+---
 ## Contributing
 
 PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for branch naming, commit style, local setup, and the PR checklist.

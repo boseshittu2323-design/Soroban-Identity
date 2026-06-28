@@ -14,6 +14,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     SorobanRpc: {
       ...actual.SorobanRpc,
       Server: vi.fn().mockImplementation(() => ({
+        getHealth: vi.fn().mockResolvedValue({ status: 'healthy' }),
         getAccount: mockGetAccount,
         simulateTransaction: mockSimulateTransaction,
       })),
@@ -35,6 +36,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     scValToNative: vi.fn(),
     StrKey: {
       isValidEd25519PublicKey: (addr: string) => typeof addr === "string" && addr.startsWith("G"),
+      isValidContract: actual.StrKey.isValidContract.bind(actual.StrKey),
     },
   };
 });
@@ -44,9 +46,9 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
 const config: SorobanIdentityConfig = {
   rpcUrl: "https://soroban-testnet.stellar.org",
   networkPassphrase: "Test SDF Network ; September 2015",
-  identityRegistryId: "CONTRACT_IDENTITY",
-  credentialManagerId: "CONTRACT_CREDENTIAL",
-  reputationId: "CONTRACT_REPUTATION",
+  identityRegistryId: "CBBNTYLY7WH6O3IGUI6BKUYLB5UQOOCNDYW5EL7BY4DJKPZ7SGIRWCSL",
+  credentialManagerId: "CD5MO3M3LYM5JLYXD27ARVECRKQXLJJSNBWMAUJ6ST3F4FXBGGXTJA7T",
+  reputationId: "CBXM5TFFI4DWZ2OQSR37KHVO6OEKTJQTGOQMFTIDFTFUP32COAGW4OPK",
 };
 
 describe("ReputationClient.getReporters", () => {
