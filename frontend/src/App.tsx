@@ -15,7 +15,13 @@ import {
   type NetworkName,
 } from "./network";
 import { checkConnection, IdentityClient, CredentialClient, ReputationClient } from "../../sdk/src/index";
+import { setLocale } from "./i18n";
 import type { Credential } from "../../sdk/src/types";
+
+const SUPPORTED_LOCALES: { code: string; label: string }[] = [
+  { code: "en", label: "EN" },
+  { code: "es", label: "ES" },
+];
 
 export enum Tab {
   Identity = "identity",
@@ -108,10 +114,8 @@ export default function App() {
     fetchCredentials,
   );
 
-  const toggleLang = () => {
-    const next = i18n.language === "en" ? "es" : "en";
-    i18n.changeLanguage(next);
-    localStorage.setItem("lang", next);
+  const handleLocaleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLocale(e.target.value);
   };
 
   return (
@@ -158,13 +162,16 @@ export default function App() {
               {isConnected ? t("app.networkOnline") : t("app.networkOffline")}
             </div>
           )}
-          <button
-            className="theme-toggle"
-            onClick={toggleLang}
+          <select
+            value={i18n.language}
+            onChange={handleLocaleChange}
             aria-label="Switch language"
+            style={{ padding: "0.3rem 0.5rem", borderRadius: "0.25rem", fontSize: "0.85rem" }}
           >
-            {i18n.language === "en" ? "ES" : "EN"}
-          </button>
+            {SUPPORTED_LOCALES.map(({ code, label }) => (
+              <option key={code} value={code}>{label}</option>
+            ))}
+          </select>
           <label className="network-switcher" aria-label="Network">
             <span>Network</span>
             <select

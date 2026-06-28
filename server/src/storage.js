@@ -107,3 +107,18 @@ export function upsertCredential(credentials, credential) {
   next[index] = { ...next[index], ...credential };
   return next;
 }
+
+export class DuplicateCredentialError extends Error {
+  constructor(id) {
+    super(`Credential with ID "${id}" already exists`);
+    this.name = 'DuplicateCredentialError';
+    this.id = id;
+  }
+}
+
+export function createCredential(credentials, credential) {
+  if (credentials.some((item) => item.id === credential.id)) {
+    throw new DuplicateCredentialError(credential.id);
+  }
+  return [...credentials, credential];
+}
