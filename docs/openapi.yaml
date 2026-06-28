@@ -37,6 +37,24 @@ paths:
             application/yaml:
               schema:
                 type: string
+  /info:
+    get:
+      tags: [meta]
+      summary: Server capability discovery.
+      description: |
+        Returns server version, supported features, and the minimum compatible
+        SDK version. Clients can use this to gate feature usage before calling
+        endpoints that may not exist on older deployments.
+      responses:
+        '200':
+          description: Server information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerInfo'
+        '404':
+          description: Endpoint not supported by this server version.
+
   /health:
     get:
       tags: [meta]
@@ -344,9 +362,15 @@ paths:
           description: Revoked.
 
   /credentials/{id}/verify:
-    get:
+    post:
       tags: [credentials]
-      summary: Verify a credential's validity.
+      summary: Verify a credential and return its full record on success.
+      description: |
+        Verifies the credential identified by `id`. On success returns the
+        full credential record alongside `verified: true`, eliminating the
+        need for a follow-up GET /credentials/{id} call. On failure returns
+        `verified: false` with a `reason` string describing why verification
+        failed.
       x-soroban-contract:
         contract: credential-manager
         function: verify_credential
@@ -357,7 +381,26 @@ paths:
           description: Verification result.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/VerifyResult' }
+              schema:
+                oneOf:
+                  - type: object
+                    required: [verified, credential]
+                    properties:
+                      verified:
+                        type: boolean
+                        enum: [true]
+                      credential:
+                        $ref: '#/components/schemas/Credential'
+                  - type: object
+                    required: [verified, reason]
+                    properties:
+                      verified:
+                        type: boolean
+                        enum: [false]
+                      reason:
+                        type: string
+                        enum: [not_found, revoked, expired]
+                        description: Machine-readable failure reason.
 
   /credentials/by-subject/{subject}:
     parameters:
@@ -519,6 +562,23 @@ paths:
 
 components:
   schemas:
+    ServerInfo:
+      type: object
+      required: [version, features, minSdkVersion]
+      properties:
+        version:
+          type: string
+          description: Server application version.
+          example: 0.1.0
+        features:
+          type: array
+          items: { type: string }
+          description: List of optional features supported by this server.
+          example: [webhook_delivery, batch_issuance, event_polling]
+        minSdkVersion:
+          type: string
+          description: Minimum SDK version compatible with this server.
+          example: 0.1.0
     Error:
       type: object
       required: [error, code]

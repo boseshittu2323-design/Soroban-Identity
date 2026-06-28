@@ -11,6 +11,9 @@ import {
   setCorsHeaders,
 } from "./http-utils.js";
 import { requestContextStore } from "./request-context.js";
+const SERVER_VERSION = "0.1.0";
+const MIN_SDK_VERSION = "0.1.0";
+const SERVER_FEATURES = ["webhook_delivery", "batch_issuance", "event_polling"];
 
 export function createApp({ config, soroban, metrics, metricsAggregator }) {
   return function app(req, res) {
@@ -30,6 +33,14 @@ export function createApp({ config, soroban, metrics, metricsAggregator }) {
           `http://${req.headers.host ?? "localhost"}`,
         );
 
+        if (req.method === "GET" && url.pathname === "/info") {
+          return sendJson(res, 200, {
+            version: SERVER_VERSION,
+            features: SERVER_FEATURES,
+            minSdkVersion: MIN_SDK_VERSION,
+          });
+        }
+
         if (req.method === "GET" && url.pathname === "/health") {
           const contracts = await soroban.pingAllContracts();
           const ok = Object.values(contracts).every(Boolean);
@@ -46,6 +57,24 @@ export function createApp({ config, soroban, metrics, metricsAggregator }) {
               .refresh()
               .catch((error) => console.error("metrics refresh failed", error));
           return sendText(res, 200, metrics.renderPrometheus());
+        }
+
+        const verifyMatch = url.pathname.match(/^\/credentials\/([^/]+)\/verify$/);
+        if (req.method === "POST" && verifyMatch) {
+          const credentialId = decodeURIComponent(verifyMatch[1]);
+          const credentials = await readCredentials(config);
+          const credential = credentials.find((c) => c.id === credentialId);
+          if (!credential) {
+            return sendJson(res, 200, { verified: false, reason: "not_found" });
+          }
+          if (credential.revoked) {
+            return sendJson(res, 200, { verified: false, reason: "revoked" });
+          }
+          const now = Math.floor(Date.now() / 1000);
+          if (credential.expiresAt > 0 && credential.expiresAt < now) {
+            return sendJson(res, 200, { verified: false, reason: "expired" });
+          }
+          return sendJson(res, 200, { verified: true, credential });
         }
 
         if (

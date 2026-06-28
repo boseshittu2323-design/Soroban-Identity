@@ -100,6 +100,112 @@ function parseRawEvent(event: SorobanRpc.Api.EventResponse): ContractEvent | nul
   }
 }
 
+const MAX_RECONNECT_RETRIES = 5;
+
+export interface SubscribeOptions {
+  /** Polling interval in milliseconds. Defaults to 5000. */
+  pollIntervalMs?: number;
+}
+
+/**
+ * Subscribe to real-time contract events with automatic reconnect.
+ *
+ * Manages an internal polling loop, calls `handler(event)` for each new
+ * matching event, and reconnects automatically after transient network
+ * failures up to {@link MAX_RECONNECT_RETRIES} consecutive attempts.
+ *
+ * Duplicate events across poll cycles are suppressed via a seen-txHash set.
+ *
+ * @param rpcUrl     Soroban RPC endpoint URL.
+ * @param contractId Contract whose events to subscribe to.
+ * @param filter     Optional topic / contract-ID filter.
+ * @param handler    Called once per new matching event.
+ * @param options    Subscription options (pollIntervalMs).
+ * @returns An `unsubscribe()` function that stops the polling loop.
+ *
+ * @example
+ * ```ts
+ * const unsubscribe = subscribeToEvents(
+ *   rpcUrl, contractId, { topic: ['credential', 'issued'] },
+ *   (event) => console.log(event),
+ *   { pollIntervalMs: 3000 },
+ * );
+ * // later…
+ * unsubscribe();
+ * ```
+ */
+export function subscribeToEvents(
+  rpcUrl: string,
+  contractId: string,
+  filter: EventFilter | undefined,
+  handler: (event: ContractEvent) => void,
+  options: SubscribeOptions = {},
+): () => void {
+  const { pollIntervalMs = 5000 } = options;
+  const server = new SorobanRpc.Server(rpcUrl);
+  const seenTxHashes = new Set<string>();
+  let lastLedger = 0;
+  let reconnectAttempts = 0;
+  let stopped = false;
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const response = await server.getEvents({
+        startLedger: lastLedger || undefined,
+        filters: [
+          {
+            type: "contract",
+            contractIds: [contractId],
+            topics: buildTopicsFilter(filter),
+          },
+        ],
+        limit: 100,
+      });
+
+      const events = (response.events ?? [])
+        .map(parseRawEvent)
+        .filter((e): e is ContractEvent => e !== null)
+        .filter((e) => !seenTxHashes.has(e.txHash));
+
+      for (const event of events) {
+        seenTxHashes.add(event.txHash);
+        handler(event);
+      }
+
+      if (events.length > 0) {
+        lastLedger = Math.max(...events.map((e) => e.ledger)) + 1;
+      }
+
+      reconnectAttempts = 0;
+    } catch (err) {
+      if (stopped) return;
+      reconnectAttempts++;
+      if (reconnectAttempts > MAX_RECONNECT_RETRIES) {
+        console.error("subscribeToEvents: max reconnect retries exceeded, stopping.", err);
+        stopped = true;
+        return;
+      }
+      console.warn(`subscribeToEvents: transient error (attempt ${reconnectAttempts}/${MAX_RECONNECT_RETRIES}), reconnecting...`, err);
+    }
+
+    if (!stopped) {
+      timerId = setTimeout(poll, pollIntervalMs);
+    }
+  };
+
+  timerId = setTimeout(poll, 0);
+
+  return () => {
+    stopped = true;
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+      timerId = undefined;
+    }
+  };
+}
+
 /**
  * Long-running, polling-based listener for real-time Soroban contract events.
  *

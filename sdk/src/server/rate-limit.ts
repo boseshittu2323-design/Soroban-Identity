@@ -89,11 +89,20 @@ export class TokenBucketRateLimiter {
     const allowed = bucket.tokens >= 1;
     if (allowed) bucket.tokens -= 1;
     this.buckets.set(key, bucket);
+    this.evictStale(now, config.windowMs);
     const remaining = Math.max(0, Math.floor(bucket.tokens));
     // Reset is at the next full window boundary based on last refill.
     const resetAt = Math.ceil((bucket.lastRefillAt + config.windowMs) / 1000);
     const retryAfterMs = allowed ? 0 : Math.max(1, Math.ceil(config.windowMs / config.limit));
     return { allowed, limit: config.limit, remaining, resetAt, retryAfterMs };
+  }
+
+  private evictStale(now: number, windowMs: number): void {
+    for (const [k, b] of this.buckets) {
+      if (now - b.lastRefillAt > windowMs) {
+        this.buckets.delete(k);
+      }
+    }
   }
 
   private resolveConfig(key: string, rateClass: RateClass): RateLimitConfig {

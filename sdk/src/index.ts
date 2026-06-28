@@ -18,7 +18,10 @@ export type {
   PresentationVerifyResult,
   PresentationVerifyFailReason,
 } from './presentation';
-export { SorobanEventListener, getEvents } from './events';
+export { SorobanEventListener, getEvents, subscribeToEvents } from './events';
+export type { SubscribeOptions } from './events';
+export { getServerInfo, UnsupportedEndpointError } from './server-info';
+export type { ServerInfo } from './server-info';
 export { SorobanTransactionBuilder } from './transaction-builder';
 export { RequestQueue } from './request-queue';
 export {
