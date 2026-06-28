@@ -307,3 +307,19 @@ export function validateConfig(
     throw new Error(`${options.contractIdField} is not a valid contract ID`);
   }
 }
+
+export interface FeeEstimate {
+  /** Base network fee in stroops. */
+  baseFee: number;
+  /** Soroban resource fee in stroops. */
+  resourceFee: number;
+  /** Total fee (baseFee + resourceFee) in stroops. */
+  totalFee: number;
+}
+
+export class SimulationError extends Error {
+  constructor(message: string, public readonly raw?: unknown) {
+    super(message);
+    this.name = 'SimulationError';
+  }
+}

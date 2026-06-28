@@ -1,6 +1,6 @@
 import { URL } from "node:url";
 import crypto from "node:crypto";
-import { appendAuditLog, readCredentials } from "./storage.js";
+import { appendAuditLog, readCredentials, writeCredentials, createCredential, DuplicateCredentialError } from "./storage.js";
 import { findExpiringCredentials, paginate } from "./expiry.js";
 import {
   notFound,
@@ -53,6 +53,30 @@ export function createApp({ config, soroban, metrics, metricsAggregator }) {
           !requireAdmin(req, res, config)
         )
           return;
+
+        if (req.method === "POST" && url.pathname === "/credentials") {
+          const body = await readJson(req, config);
+          if (body.__payloadTooLarge)
+            return sendJson(res, 413, { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the size limit." });
+          if (!body.id)
+            return sendJson(res, 400, { code: "INVALID_REQUEST", message: "Request body must include a credential id." });
+          try {
+            const credentials = await readCredentials(config);
+            const updated = createCredential(credentials, body);
+            await writeCredentials(config, updated);
+            await appendAuditLog(config, { action: "issue_credential", credentialId: body.id });
+            return sendJson(res, 201, body);
+          } catch (err) {
+            if (err instanceof DuplicateCredentialError) {
+              return sendJson(res, 409, {
+                code: "CREDENTIAL_ALREADY_EXISTS",
+                message: err.message,
+                details: [{ field: "id", value: err.id }],
+              });
+            }
+            throw err;
+          }
+        }
 
         if (req.method === "GET" && url.pathname === "/admin/issuers") {
           const issuers = await soroban.getIssuers();

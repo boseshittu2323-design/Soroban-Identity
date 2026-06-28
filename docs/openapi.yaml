@@ -285,12 +285,33 @@ paths:
           description: Malformed claims hash, signature, or claims failed schema validation.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '401':
           description: Issuer is not registered.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Caller does not have permission to issue credentials.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: A credential with the given ID already exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                code: CREDENTIAL_ALREADY_EXISTS
+                message: Credential with ID "abc123" already exists.
+                details:
+                  - field: id
+                    value: abc123
+        '422':
+          description: Credential data failed validation (e.g. claimsHash format is invalid).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /credentials/{id}:
     parameters:

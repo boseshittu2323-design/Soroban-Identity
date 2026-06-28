@@ -122,3 +122,5 @@ export const MAINNET_CONFIG: SorobanIdentityConfig = {
   credentialManagerId: '',
   reputationId: '',
 };
+export type { FeeEstimate } from './types';
+export { SimulationError } from './types';
