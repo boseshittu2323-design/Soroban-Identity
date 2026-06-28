@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
 export interface ContractEventFilter {
   contractId?: string;
   topic?: string[];
+  eventTypes?: string[];
+  onEvent?: (type: string, data: StreamedContractEvent) => void;
 }
 
 export interface StreamedContractEvent {
@@ -26,6 +28,7 @@ export function useContractEvents(filter?: ContractEventFilter) {
   const eventsUrl = import.meta.env.VITE_EVENTS_URL ?? 'http://localhost:3001/events';
 
   const topicKey = filter?.topic?.join(',') ?? '';
+  const eventTypesKey = filter?.eventTypes?.join(',') ?? '';
 
   const streamUrl = useMemo(() => {
     const url = new URL(eventsUrl);
@@ -37,6 +40,13 @@ export function useContractEvents(filter?: ContractEventFilter) {
     }
     return url.toString();
   }, [eventsUrl, filter?.contractId, topicKey]);
+
+  const shouldIncludeEvent = useCallback((eventType: string): boolean => {
+    if (!filter?.eventTypes || filter.eventTypes.length === 0) {
+      return true;
+    }
+    return filter.eventTypes.includes(eventType);
+  }, [filter?.eventTypes]);
 
   useEffect(() => {
     const source = new EventSource(streamUrl);
@@ -50,7 +60,10 @@ export function useContractEvents(filter?: ContractEventFilter) {
     source.addEventListener('contract-event', (evt) => {
       try {
         const parsed = JSON.parse((evt as MessageEvent).data) as StreamedContractEvent;
-        setEvents((prev) => [parsed, ...prev].slice(0, MAX_EVENTS));
+        if (shouldIncludeEvent(parsed.type)) {
+          setEvents((prev) => [parsed, ...prev].slice(0, MAX_EVENTS));
+          filter?.onEvent?.(parsed.type, parsed);
+        }
       } catch {
         // Ignore invalid payloads
       }
@@ -70,7 +83,7 @@ export function useContractEvents(filter?: ContractEventFilter) {
       sourceRef.current = null;
       setConnected(false);
     };
-  }, [streamUrl]);
+  }, [streamUrl, shouldIncludeEvent, filter?.onEvent]);
 
   return { events, connected, error };
 }
