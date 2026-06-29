@@ -284,3 +284,92 @@ export const WEBHOOK_HEADERS = Object.freeze({
   event: HEADER_EVENT,
   id: HEADER_ID,
 });
+
+// ── Dead-Letter Queue (#392) ─────────────────────────────────────────────────
+// After all retries are exhausted, writes a dead-letter record to disk so an
+// operator can inspect and replay failed deliveries.
+//
+// Environment:
+//   WEBHOOK_MAX_RETRIES  – max delivery attempts (default 5)
+//   WEBHOOK_DLQ_PATH     – directory for DLQ records  (default ./dlq)
+
+export interface DlqRecord {
+  deliveryId: string;
+  webhookId: string;
+  url: string;
+  event: WebhookEvent;
+  payload: Record<string, unknown>;
+  attempts: DeliveryAttempt[];
+  failedAt: number;
+}
+
+export interface DlqWriter {
+  write(record: DlqRecord): Promise<void>;
+}
+
+/** Default DLQ writer: appends one JSON record per line to `<dlqPath>/<deliveryId>.json`. */
+export class FileDlqWriter implements DlqWriter {
+  constructor(private readonly dlqPath: string = process.env.WEBHOOK_DLQ_PATH ?? "./dlq") {}
+
+  async write(record: DlqRecord): Promise<void> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(this.dlqPath, { recursive: true });
+    const file = `${this.dlqPath}/${record.deliveryId}.json`;
+    await writeFile(file, JSON.stringify(record, null, 2), "utf8");
+  }
+}
+
+/**
+ * Wraps {@link WebhookDispatcher} and writes dead-letter records on exhausted retries.
+ *
+ * Reads `WEBHOOK_MAX_RETRIES` (default 5) and `WEBHOOK_DLQ_PATH` (default `./dlq`)
+ * from the environment. Both can be overridden via constructor options.
+ *
+ * Backoff starts at 1 s and doubles each attempt: 1 s, 2 s, 4 s, 8 s, 16 s …
+ */
+export class WebhookDispatcherWithDLQ {
+  private readonly dispatcher: WebhookDispatcher;
+  private readonly dlqWriter: DlqWriter;
+
+  constructor(
+    options: DeliverOptions & { dlqWriter?: DlqWriter } = {},
+  ) {
+    const maxAttempts =
+      options.maxAttempts ??
+      Number(process.env.WEBHOOK_MAX_RETRIES ?? 5);
+    // 1 s base with doubling => 1s, 2s, 4s, 8s, 16s  (jitter=0)
+    this.dispatcher = new WebhookDispatcher({
+      ...options,
+      maxAttempts,
+      baseDelayMs: options.baseDelayMs ?? 1000,
+      maxDelayMs: options.maxDelayMs ?? 32_000,
+    });
+    this.dlqWriter =
+      options.dlqWriter ??
+      new FileDlqWriter(process.env.WEBHOOK_DLQ_PATH ?? "./dlq");
+  }
+
+  async deliver(
+    reg: WebhookRegistration,
+    event: WebhookEvent,
+    data: Record<string, unknown>,
+    deliveryId: string = randomBytes(8).toString("hex"),
+  ): Promise<DeliveryResult> {
+    const result = await this.dispatcher.deliver(reg, event, data, deliveryId);
+    if (!result.ok) {
+      const record: DlqRecord = {
+        deliveryId,
+        webhookId: reg.id,
+        url: reg.url,
+        event,
+        payload: data,
+        attempts: result.attempts,
+        failedAt: Date.now(),
+      };
+      await this.dlqWriter.write(record).catch((err) =>
+        console.error("[DLQ] failed to write dead-letter record", err),
+      );
+    }
+    return result;
+  }
+}
