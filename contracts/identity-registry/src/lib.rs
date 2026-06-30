@@ -73,8 +73,6 @@ pub struct DidDocument {
     pub services: Vec<ServiceEndpoint>,
 }
 
-// ── Contract ──────────────────────────────────────────────────────────────────
-
 #[contract]
 pub struct IdentityRegistry;
 
@@ -145,9 +143,7 @@ impl IdentityRegistry {
         }
         Self::validate_metadata(&metadata)?;
         let did_id = Self::build_did_string(&env, &controller);
-        if !Self::validate_did_format(&env, &did_id) {
-            return Err(ContractError::DidNotFound);
-        }
+        if !Self::validate_did_format(&env, &did_id) { return Err(ContractError::DidNotFound); }
         let now = env.ledger().timestamp();
         let doc = DidDocument {
             id: did_id.clone(),
@@ -281,23 +277,6 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    /// Resolve a DID document by controller address.
-    pub fn resolve_did(env: Env, controller: Address) -> Result<DidDocument, IdentityError> {
-        let key = Self::did_key(&env, &controller);
-    pub fn resolve_did(env: Env, controller: Address) -> DidDocument {
-        let key = keys::did_key(&env, &controller);
-        env.storage()
-    /// Resolves a DID document by controller address.
-    ///
-    /// Returns the full [`DidDocument`] if the DID exists and is active.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `controller` - The Stellar address whose DID document to fetch.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::DidNotFound`] if no DID exists for the address.
-    /// Returns [`ContractError::DidDeactivated`] if the DID has been deactivated.
     pub fn resolve_did(env: Env, controller: Address) -> Result<DidDocument, ContractError> {
         let key = Self::did_key(&env, &controller);
         if env.storage().persistent().has(&key) {
@@ -332,12 +311,62 @@ impl IdentityRegistry {
         }
     }
 
+    // ── Service endpoints (#393) ───────────────────────────────────────────────
+
+    /// Appends a service endpoint to the DID document. Returns ServiceAlreadyExists
+    /// if an endpoint with the same id is already present.
+    pub fn add_service(env: Env, controller: Address, endpoint: ServiceEndpoint) -> Result<(), ContractError> {
+        controller.require_auth();
+        let key = Self::did_key(&env, &controller);
+        let mut doc: DidDocument = env.storage().persistent().get(&key).ok_or(ContractError::DidNotFound)?;
+        if !doc.active { return Err(ContractError::DidDeactivated); }
+        for svc in doc.services.iter() {
+            if svc.id == endpoint.id { return Err(ContractError::ServiceAlreadyExists); }
+        }
+        doc.services.push_back(endpoint.clone());
+        doc.updated_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &doc);
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        env.events().publish((IDENTITY, symbol_short!("svc_added")), (EVENT_VERSION, controller, endpoint.id));
+        Ok(())
+    }
+
+    /// Removes a service endpoint by id. Returns DidNotFound if the id is absent.
+    pub fn remove_service(env: Env, controller: Address, service_id: String) -> Result<(), ContractError> {
+        controller.require_auth();
+        let key = Self::did_key(&env, &controller);
+        let mut doc: DidDocument = env.storage().persistent().get(&key).ok_or(ContractError::DidNotFound)?;
+        if !doc.active { return Err(ContractError::DidDeactivated); }
+        let mut found = false;
+        let mut updated = Vec::new(&env);
+        for svc in doc.services.iter() {
+            if svc.id == service_id {
+                found = true;
+            } else {
+                updated.push_back(svc);
+            }
+        }
+        if !found { return Err(ContractError::DidNotFound); }
+        doc.services = updated;
+        doc.updated_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &doc);
+        env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        env.events().publish((IDENTITY, symbol_short!("svc_rmvd")), (EVENT_VERSION, controller, service_id));
+        Ok(())
+    }
+
+    /// Returns all service endpoints for a DID.
+    pub fn get_services(env: Env, controller: Address) -> Result<Vec<ServiceEndpoint>, ContractError> {
+        let key = Self::did_key(&env, &controller);
+        let doc: DidDocument = env.storage().persistent().get(&key).ok_or(ContractError::DidNotFound)?;
+        if !doc.active { return Err(ContractError::DidDeactivated); }
+        Ok(doc.services)
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
-        if env.storage().instance().has(&ADMIN) {
-            return Err(ContractError::AlreadyInitialized);
-        }
+        if env.storage().instance().has(&ADMIN) { return Err(ContractError::AlreadyInitialized); }
         Ok(())
     }
 
@@ -346,13 +375,9 @@ impl IdentityRegistry {
     }
 
     fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError> {
-        if metadata.len() > 10 {
-            return Err(ContractError::MetadataTooLarge);
-        }
+        if metadata.len() > 10 { return Err(ContractError::MetadataTooLarge); }
         for (k, v) in metadata.iter() {
-            if k.len() > 64 || v.len() > 256 {
-                return Err(ContractError::MetadataTooLong);
-            }
+            if k.len() > 64 || v.len() > 256 { return Err(ContractError::MetadataTooLong); }
         }
         Ok(())
     }
@@ -373,15 +398,11 @@ impl IdentityRegistry {
         String::from_bytes(env, &result)
     }
 
-    fn validate_did_format(env: &Env, did: &String) -> bool {
-        if did.len() != 68 {
-            return false;
-        }
+    pub fn validate_did_format(env: &Env, did: &String) -> bool {
+        if did.len() != 68 { return false; }
         let did_bytes = Self::string_to_bytes(env, did);
         for (i, expected) in DID_STELLAR_PREFIX.iter().enumerate() {
-            if did_bytes.get(i as u32).unwrap() != *expected {
-                return false;
-            }
+            if did_bytes.get(i as u32).unwrap() != *expected { return false; }
         }
         true
     }
@@ -394,8 +415,6 @@ impl IdentityRegistry {
         result
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -549,10 +568,8 @@ mod tests {
     fn test_reactivate_did_unauthorized_non_admin() {
         let env = Env::default();
         env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
+        let id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &id);
         let admin = Address::generate(&env);
         let non_admin = Address::generate(&env);
         let user = Address::generate(&env);
@@ -570,10 +587,39 @@ mod tests {
     fn test_reactivate_did_already_active_is_noop() {
         let env = Env::default();
         env.mock_all_auths();
+        let id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        client.create_did(&u1, &Map::new(&env));
+        client.create_did(&u2, &Map::new(&env));
+        let stats = client.get_storage_stats();
+        assert_eq!(stats.total_dids, 2);
+        assert_eq!(stats.active_dids, 2);
+        client.deactivate_did(&u1);
+        let stats = client.get_storage_stats();
+        assert_eq!(stats.total_dids, 2);
+        assert_eq!(stats.active_dids, 1);
+    }
 
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
+    // ── Service endpoint tests (#393) ─────────────────────────────────────────
 
+    fn make_endpoint(env: &Env, id: &str) -> ServiceEndpoint {
+        ServiceEndpoint {
+            id: String::from_str(env, id),
+            type_: String::from_str(env, "DIDCommMessaging"),
+            service_endpoint: String::from_str(env, "https://example.com"),
+        }
+    }
+
+    #[test]
+    fn test_add_service() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &cid);
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
 
@@ -593,10 +639,8 @@ mod tests {
     fn test_reactivate_did_restores_active_did() {
         let env = Env::default();
         env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
+        let cid = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &cid);
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
 

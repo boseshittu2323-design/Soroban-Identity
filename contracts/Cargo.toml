@@ -7,12 +7,14 @@ publish = false
 [workspace]
 members = [
     ".",
+    "shared-errors",
     "identity-registry",
     "credential-manager",
     "reputation",
 ]
 default-members = [
     ".",
+    "shared-errors",
     "identity-registry",
     "credential-manager",
     "reputation",
@@ -23,6 +25,7 @@ resolver = "2"
 credential-manager = { path = "credential-manager" }
 identity-registry = { path = "identity-registry" }
 reputation = { path = "reputation" }
+shared-errors = { path = "shared-errors" }
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 
 [profile.release]

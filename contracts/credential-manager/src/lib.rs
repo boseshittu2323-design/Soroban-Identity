@@ -9,12 +9,9 @@ use soroban_sdk::xdr::ToXdr;
 pub const CONTRACT_VERSION: u32 = 1;
 const EVENT_VERSION: u32 = 1;
 
-// ── Storage keys ──────────────────────────────────────────────────────────────
-
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const ISSUER: Symbol = symbol_short!("ISSUER");
-const ISSUER_KEY: Symbol = symbol_short!("ISS_KEY");
 const CRED: Symbol = symbol_short!("CRED");
 const SUBJECT: Symbol = symbol_short!("sub");
 const CRED_CNT: Symbol = symbol_short!("CREDCNT");
@@ -27,7 +24,10 @@ const MAX_ISSUERS: u32 = 100;
 const MAX_ISSUER_CREDS: u32 = 10_000;
 const IDENTITY_REGISTRY: Symbol = symbol_short!("IDREGIST");
 
-// ── Errors ────────────────────────────────────────────────────────────────────
+const MAX_ISSUERS: u32 = 100;
+const TTL_MAX: u32 = 6_312_000;
+const TTL_MIN: u32 = 17_280;
+const PAGE_CAP: u32 = 100;
 
 #[contracterror]
 #[derive(Clone, Debug, PartialEq, Copy)]
@@ -96,8 +96,6 @@ pub struct Credential {
     pub schema_hash: Option<BytesN<32>>,
 }
 
-// ── Contract ──────────────────────────────────────────────────────────────────
-
 #[contract]
 pub struct CredentialManager;
 
@@ -140,9 +138,7 @@ impl CredentialManager {
         Self::require_admin(&env)?;
         let mut issuers = Self::get_issuers_internal(&env);
         if !issuers.contains(&issuer) {
-            if issuers.len() >= MAX_ISSUERS {
-                return Err(ContractError::MaxIssuersReached);
-            }
+            if issuers.len() >= MAX_ISSUERS { return Err(ContractError::MaxIssuersReached); }
             issuers.push_back(issuer.clone());
             env.storage().instance().set(&ISSUER, &issuers);
             env.events().publish((ISSUER, symbol_short!("added")), (EVENT_VERSION, issuer));
@@ -154,11 +150,7 @@ impl CredentialManager {
         Self::require_admin(&env)?;
         let issuers = Self::get_issuers_internal(&env);
         let mut updated = Vec::new(&env);
-        for i in issuers.iter() {
-            if i != issuer {
-                updated.push_back(i);
-            }
-        }
+        for i in issuers.iter() { if i != issuer { updated.push_back(i); } }
         env.storage().instance().set(&ISSUER, &updated);
         Ok(())
     }
