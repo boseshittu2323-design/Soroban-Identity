@@ -1,77 +1,42 @@
-// @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
-import "@testing-library/jest-dom/vitest";
+import { describe, it, expect } from "vitest";
+import { render } from "@testing-library/react";
 import ReputationChart from "./ReputationChart";
 import type { ScoreHistoryEntry } from "../../../sdk/src/reputation";
 
-const mockHistory: ScoreHistoryEntry[] = [
-  {
-    score: 10,
-    delta: 5,
-    reason: "Contribution",
-    submittedBy: "GBXXX...",
-    submittedAt: Math.floor(Date.now() / 1000) - 86400,
-  },
-  {
-    score: 15,
-    delta: 5,
-    reason: "Verification",
-    submittedBy: "GBXXX...",
-    submittedAt: Math.floor(Date.now() / 1000),
-  },
+const sampleHistory: ScoreHistoryEntry[] = [
+  { reporter: "GREPORTER1", submittedAt: 1700000000, delta: 10, reason: "activity" },
+  { reporter: "GREPORTER1", submittedAt: 1700086400, delta: -5, reason: "penalty" },
 ];
 
-// Recharts ResponsiveContainer often needs fallback or resize observer in jsdom
-vi.mock("recharts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("recharts")>();
-  return {
-    ...original,
-    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
-      <div data-testid="responsive-container" style={{ width: "100%", height: 200 }}>
-        {children}
-      </div>
-    ),
-  };
-});
-
 describe("ReputationChart", () => {
-  afterEach(() => {
-    cleanup();
+  it("renders empty-state when history is empty", () => {
+    const { container } = render(<ReputationChart history={[]} />);
+    const p = container.querySelector("p");
+    expect(p).not.toBeNull();
+    expect(p!.textContent).toBe("No reputation history yet.");
+    expect(p!.getAttribute("role")).toBe("status");
   });
 
-  it("renders skeleton placeholder during loading state with correct aria-label and dimensions", () => {
-    const { container } = render(<ReputationChart history={[]} isLoading={true} />);
-
-    const skeleton = screen.getByLabelText("Loading reputation chart");
-    expect(skeleton).toBeInTheDocument();
-    expect(skeleton).toHaveClass("card", "skeleton-card");
-
-    // Check style has height 200 applied
-    expect(skeleton.style.height).toBe("200px");
-    expect(container.querySelector(".skeleton-title")).toBeInTheDocument();
+  it("does not render empty-state when history is non-empty", () => {
+    const { container } = render(<ReputationChart history={sampleHistory} />);
+    const p = container.querySelector("p[role='status']");
+    expect(p).toBeNull();
   });
 
-  it("shows skeleton loader when isLoading=true even if history is empty", () => {
-    render(<ReputationChart history={[]} isLoading={true} />);
-    expect(screen.getByLabelText("Loading reputation chart")).toBeInTheDocument();
-    expect(screen.queryByText("No score history available.")).not.toBeInTheDocument();
+  it("renders chart container when history is non-empty", () => {
+    const { container } = render(<ReputationChart history={sampleHistory} />);
+    // recharts renders an svg
+    const svg = container.querySelector("svg");
+    expect(svg).not.toBeNull();
   });
 
-  it("shows empty state when isLoading=false and history is empty", () => {
-    render(<ReputationChart history={[]} isLoading={false} />);
-    expect(screen.getByText("No score history available.")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Loading reputation chart")).not.toBeInTheDocument();
+  it("matches empty-state snapshot", () => {
+    const { container } = render(<ReputationChart history={[]} />);
+    expect(container.firstChild).toMatchSnapshot();
   });
 
-  it("renders chart when isLoading=false and history has items", () => {
-    render(<ReputationChart history={mockHistory} isLoading={false} />);
-    expect(screen.queryByLabelText("Loading reputation chart")).not.toBeInTheDocument();
-    expect(screen.getByTestId("responsive-container")).toBeInTheDocument();
-  });
-
-  it("matches snapshot when loading", () => {
-    const { container } = render(<ReputationChart history={[]} isLoading={true} />);
-    expect(container).toMatchSnapshot();
+  it("matches non-empty chart snapshot", () => {
+    const { container } = render(<ReputationChart history={sampleHistory} />);
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

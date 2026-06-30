@@ -103,7 +103,7 @@ export async function writeCredentials(config, credentials) {
 export function upsertCredential(credentials, credential) {
   const index = credentials.findIndex((item) => item.id === credential.id);
   if (index === -1) return [...credentials, credential];
-  const next = credentials.slice();
+  const next = credentials.map((c) => ({ ...c }));
   next[index] = { ...next[index], ...credential };
   return next;
 }

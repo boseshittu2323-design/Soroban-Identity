@@ -70,8 +70,8 @@ export default function ReputationChart({ history, isLoading = false }: Props) {
 
   if (history.length === 0) {
     return (
-      <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "1rem 0" }}>
-        No score history available.
+      <p role="status" style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "1rem 0" }}>
+        No reputation history yet.
       </p>
     );
   }
