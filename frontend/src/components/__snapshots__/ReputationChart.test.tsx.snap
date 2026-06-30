@@ -1,0 +1,28 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ReputationChart > matches snapshot when loading 1`] = `
+<div>
+  <div
+    aria-busy="true"
+    aria-label="Loading reputation chart"
+    class="card skeleton-card"
+    style="height: 200px;"
+  >
+    <div
+      class="skeleton skeleton-title"
+    />
+    <div
+      class="skeleton skeleton-row"
+      style="width: 100%;"
+    />
+    <div
+      class="skeleton skeleton-row"
+      style="width: 100%;"
+    />
+    <div
+      class="skeleton skeleton-row"
+      style="width: 60%;"
+    />
+  </div>
+</div>
+`;
