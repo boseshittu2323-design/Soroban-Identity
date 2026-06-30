@@ -12,7 +12,15 @@ const EVENT_VERSION: u32 = 1;
 
 mod keys;
 
-// ── Storage keys ──────────────────────────────────────────────────────────────
+pub const CONTRACT_VERSION: u32 = 1;
+const EVENT_VERSION: u32 = 1;
+const MIN_INTERVAL: u32 = 100;
+const MIN_SCORE: i64 = 0;
+const TTL_MAX: u32 = 6_312_000;
+const MAX_HISTORY: usize = 50;
+const PAGE_CAP: u32 = 100;
+/// Maximum number of submissions in a single batch_submit_score call.
+pub const MAX_BATCH_SIZE: u32 = 20;
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
@@ -35,10 +43,8 @@ const PAGE_CAP: u32 = 100;
 /// Ledgers a dispute remains open before it expires automatically (~1 day at 5s/ledger).
 const DISPUTE_WINDOW_LEDGERS: u32 = 17_280;
 
-// ── Errors ────────────────────────────────────────────────────────────────────
-
 #[contracterror]
-#[derive(Clone, Debug, PartialEq, Copy)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     AlreadyInitialized = 1,
     ReporterNotFound = 2,
@@ -183,10 +189,7 @@ impl Reputation {
         if !reporters.contains(&reporter) {
             reporters.push_back(reporter.clone());
             env.storage().instance().set(&REPORTER, &reporters);
-            env.events().publish(
-                (REPORTER, symbol_short!("added")),
-                (EVENT_VERSION, reporter, env.ledger().timestamp()),
-            );
+            env.events().publish((REPORTER, symbol_short!("added")), (EVENT_VERSION, reporter, env.ledger().timestamp()));
         }
         Ok(())
     }
@@ -196,9 +199,7 @@ impl Reputation {
         let reporters = Self::get_reporters(&env);
         let mut updated = Vec::new(&env);
         for r in reporters.iter() {
-            if r != reporter {
-                updated.push_back(r);
-            }
+            if r != reporter { updated.push_back(r); }
         }
         env.storage().instance().set(&REPORTER, &updated);
         env.events().publish(
@@ -234,8 +235,6 @@ impl Reputation {
                 return Err(ContractError::RateLimitExceeded);
             }
         }
-        env.storage().persistent().set(&rate_key, &current_ledger);
-        env.storage().persistent().extend_ttl(&rate_key, TTL_MAX, TTL_MAX);
 
         let now = env.ledger().timestamp();
         let rec_key = Self::record_key(&subject);
@@ -302,9 +301,7 @@ impl Reputation {
         let start = offset.min(len);
         let end = (start + effective_limit).min(len);
         let mut page = Vec::new(&env);
-        for i in start..end {
-            page.push_back(all.get(i).unwrap());
-        }
+        for i in start..end { page.push_back(all.get(i).unwrap()); }
         Ok(page)
     }
 
@@ -321,10 +318,10 @@ impl Reputation {
                 }
                 let active_reporters = Self::get_reporters(&env);
                 let mut active_count = 0u32;
-                for reporter in active_reporters.iter() {
-                    let history_key = Self::history_key(&subject, &reporter);
-                    if env.storage().persistent().has(&history_key) {
-                        env.storage().persistent().extend_ttl(&history_key, TTL_MAX, TTL_MAX);
+                for r in active_reporters.iter() {
+                    let hk = Self::history_key(&subject, &r);
+                    if env.storage().persistent().has(&hk) {
+                        env.storage().persistent().extend_ttl(&hk, TTL_MAX, TTL_MAX);
                         active_count += 1;
                     }
                 }
@@ -356,8 +353,7 @@ impl Reputation {
         let mut taken: u32 = 0;
         while (next as u32) < total && taken < effective_limit {
             items.push_back(all.get(next as u32).unwrap());
-            next += 1;
-            taken += 1;
+            next += 1; taken += 1;
         }
         let next_cursor = if (next as u32) < total { Some(next) } else { None };
         ReportersPage { items, next_cursor }
@@ -377,8 +373,7 @@ impl Reputation {
         let mut taken: u32 = 0;
         while (next as u32) < total && taken < effective_limit {
             items.push_back(all.get(next as u32).unwrap());
-            next += 1;
-            taken += 1;
+            next += 1; taken += 1;
         }
         let next_cursor = if (next as u32) < total { Some(next) } else { None };
         Ok(ScoreEntriesPage { items, next_cursor })
@@ -465,9 +460,7 @@ impl Reputation {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
-        if env.storage().instance().has(&ADMIN) {
-            return Err(ContractError::AlreadyInitialized);
-        }
+        if env.storage().instance().has(&ADMIN) { return Err(ContractError::AlreadyInitialized); }
         Ok(())
     }
 
@@ -482,9 +475,7 @@ impl Reputation {
     }
 
     fn require_reporter(env: &Env, reporter: &Address) -> Result<(), ContractError> {
-        if !Self::get_reporters(env).contains(reporter) {
-            return Err(ContractError::ReporterNotFound);
-        }
+        if !Self::get_reporters(env).contains(reporter) { return Err(ContractError::ReporterNotFound); }
         Ok(())
     }
 
@@ -496,14 +487,21 @@ impl Reputation {
         (RECORD, subject.clone())
     }
 
-    fn history_key(subject: &Address, reporter: &Address) -> (Symbol, Address, Address) {
-        (HISTORY, subject.clone(), reporter.clone())
-    }
+    fn record_key(subject: &Address) -> (Symbol, Address) { (RECORD, subject.clone()) }
+    fn history_key(subject: &Address, reporter: &Address) -> (Symbol, Address, Address) { (HISTORY, subject.clone(), reporter.clone()) }
+    fn rate_key(subject: &Address, reporter: &Address) -> (Symbol, Address, Address) { (RATE_LIMIT, subject.clone(), reporter.clone()) }
 
-    fn rate_key(subject: &Address, reporter: &Address) -> (Symbol, Address, Address) {
-        (RATE_LIMIT, subject.clone(), reporter.clone())
+    /// Checks rate limit for (subject, reporter) and sets it. Call only during write phase.
+    fn check_and_set_rate_limit(env: &Env, subject: &Address, reporter: &Address) -> Result<(), ContractError> {
+        let rate_key = Self::rate_key(subject, reporter);
+        let current_ledger = env.ledger().sequence();
+        if let Some(last_ledger) = env.storage().persistent().get::<(Symbol, Address, Address), u32>(&rate_key) {
+            if current_ledger <= last_ledger + MIN_INTERVAL { return Err(ContractError::RateLimitExceeded); }
+        }
+        env.storage().persistent().set(&rate_key, &current_ledger);
+        env.storage().persistent().extend_ttl(&rate_key, TTL_MAX, TTL_MAX);
+        Ok(())
     }
-}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -529,6 +527,7 @@ mod tests {
         let client = ReputationClient::new(&env, &contract_id);
         assert_eq!(client.ping(), CONTRACT_VERSION);
     }
+}
 
     #[test]
     fn test_double_initialize_returns_error() {
