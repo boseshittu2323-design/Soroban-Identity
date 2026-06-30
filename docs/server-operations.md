@@ -63,3 +63,49 @@ scrape_configs:
       - targets:
           - soroban-identity.example.com:3001
 ```
+
+## StorageAdapter (#389)
+
+By default the server persists credentials to the local filesystem (`storage.js`). Set `STORAGE_ADAPTER` to the absolute path of a Node.js module that exports a default object implementing the following interface to swap the backend:
+
+```ts
+interface StorageAdapter {
+  read(id: string): Promise<object | null>;
+  write(id: string, data: object): Promise<void>;
+  delete(id: string): Promise<boolean>;
+  list(): Promise<object[]>;
+}
+```
+
+### Environment variable
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `STORAGE_ADAPTER` | Absolute path to a custom adapter module. | unset (filesystem) |
+
+### Example custom adapter (S3)
+
+```js
+// s3-adapter.js
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+const s3 = new S3Client({});
+const Bucket = process.env.S3_BUCKET;
+
+export default {
+  async read(id) { /* ... */ },
+  async write(id, data) { /* ... */ },
+  async delete(id) { /* ... */ },
+  async list() { /* ... */ },
+};
+```
+
+Set `STORAGE_ADAPTER=/path/to/s3-adapter.js` and the server will load it at startup via `loadStorageAdapter()`. If any of the four methods is missing the server will throw at startup.
+
+### Adapter contract
+
+A valid adapter must:
+
+1. Return `null` from `read(id)` when the record does not exist.
+2. Return `true` from `delete(id)` when the record existed and was removed, `false` otherwise.
+3. Return an array (empty if no records) from `list()`.
+4. Be idempotent: calling `write` twice with the same `id` replaces the existing record.
