@@ -11,6 +11,14 @@ export class SorobanError extends Error {
   }
 }
 
+export class SorobanTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`Soroban CLI process timed out after ${timeoutMs}ms`);
+    this.name = 'SorobanTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export class SorobanClient {
   constructor(config, metrics) {
     this.config = config;
@@ -52,11 +60,17 @@ export class SorobanClient {
     while (true) {
       const started = performance.now();
       try {
-        const output = await runCommand(this.config.stellarCli, commandArgs);
+        const output = await runCommand(this.config.stellarCli, commandArgs, this.config.sorobanInvokeTimeoutMs);
         this.metrics?.observeRpcLatency((performance.now() - started) / 1000);
         return output.trim();
       } catch (error) {
         this.metrics?.observeRpcLatency((performance.now() - started) / 1000);
+        
+        // SorobanTimeoutError should propagate immediately without retry
+        if (error instanceof SorobanTimeoutError) {
+          throw new SorobanError('timeout', 'The operation timed out.', error.message);
+        }
+        
         const errMsg = error.message.toLowerCase();
         const isTransient = errMsg.includes('timeout') || errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('econnreset');
         
@@ -168,8 +182,8 @@ export class SorobanClient {
   }
 }
 
-function runCommand(command, args) {
-  return new Promise((resolve, reject) => {
+function runCommand(command, args, timeoutMs) {
+  const commandPromise = new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -182,7 +196,23 @@ function runCommand(command, args) {
       if (code === 0) resolve(stdout);
       else reject(new Error(`command failed: ${stderr || stdout || `exit code ${code}`}`));
     });
+    
+    // Store child reference for timeout handler
+    commandPromise.child = child;
   });
+  
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      // Kill the child process with SIGKILL
+      if (commandPromise.child && !commandPromise.child.killed) {
+        console.warn(`[soroban] killing process after ${timeoutMs}ms timeout`);
+        commandPromise.child.kill('SIGKILL');
+      }
+      reject(new SorobanTimeoutError(timeoutMs));
+    }, timeoutMs);
+  });
+  
+  return Promise.race([commandPromise, timeoutPromise]);
 }
 
 function parseAddressList(raw) {

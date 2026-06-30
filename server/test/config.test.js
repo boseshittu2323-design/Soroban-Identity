@@ -110,3 +110,24 @@ test('Integration: invalid URL for RPC_URL triggers a validation error and exits
   assert.equal(result.code, 1);
   assert.ok(result.stderr.includes('STELLAR_RPC_URL: must be a valid URL'));
 });
+
+test('validateConfig directly: invalid SOROBAN_INVOKE_TIMEOUT_MS triggers validation error', () => {
+  const result = validateConfig({
+    STELLAR_SECRET_KEY: 'SAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    CREDENTIAL_CONTRACT_ID: 'CAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    SOROBAN_INVOKE_TIMEOUT_MS: 'not-a-number',
+  });
+  assert.equal(result.isValid, false);
+  assert.ok(result.invalid.some(e => e.includes('SOROBAN_INVOKE_TIMEOUT_MS')));
+});
+
+test('Integration: invalid SOROBAN_INVOKE_TIMEOUT_MS value exits 1', async () => {
+  const result = await runServer({
+    STELLAR_SECRET_KEY: 'SAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    CREDENTIAL_CONTRACT_ID: 'CAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    SOROBAN_INVOKE_TIMEOUT_MS: 'invalid',
+  });
+
+  assert.equal(result.code, 1);
+  assert.ok(result.stderr.includes('SOROBAN_INVOKE_TIMEOUT_MS'));
+});
