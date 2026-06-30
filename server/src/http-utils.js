@@ -1,3 +1,15 @@
+/**
+ * Returns true and sends 415 when the request is a non-GET/DELETE method
+ * and the Content-Type is not application/json.
+ */
+export function validateContentType(req, res) {
+  if (req.method === "GET" || req.method === "DELETE" || req.method === "OPTIONS") return false;
+  const ct = req.headers["content-type"] ?? "";
+  if (ct.toLowerCase().startsWith("application/json")) return false;
+  sendJson(res, 415, { code: "UNSUPPORTED_MEDIA_TYPE", message: "Content-Type must be application/json" });
+  return true;
+}
+
 export async function readJson(req, config) {
   // Check Content-Length header first
   const contentLength = req.headers["content-length"];

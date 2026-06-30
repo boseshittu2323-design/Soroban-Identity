@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
-import { appendAuditLog, ensureDataDir } from '../src/storage.js';
+import { appendAuditLog, ensureDataDir, upsertCredential } from '../src/storage.js';
 
 // Simple date mock
 const OriginalDate = global.Date;
@@ -97,4 +97,40 @@ test('ensureDataDir deletes audit files older than retention days', async () => 
   assert.ok(fs.existsSync(pathActiveLimit), 'File at exact limit age should NOT be deleted');
   assert.ok(!fs.existsSync(pathExpired), 'Expired file should be deleted');
   assert.ok(!fs.existsSync(pathExpiredOlder), 'Very old expired file should be deleted');
+});
+
+test('upsertCredential inserts a new credential when id is not found', () => {
+  const original = [{ id: 'a', status: 'active' }];
+  const result = upsertCredential(original, { id: 'b', status: 'pending' });
+  assert.equal(result.length, 2);
+  assert.deepEqual(result[1], { id: 'b', status: 'pending' });
+});
+
+test('upsertCredential does not mutate the original array on update', () => {
+  const cred = { id: 'a', status: 'active', extra: 'original' };
+  const original = [cred];
+  const result = upsertCredential(original, { id: 'a', status: 'revoked' });
+
+  // Original array and object must be unchanged
+  assert.equal(original[0].status, 'active');
+  assert.equal(original.length, 1);
+
+  // Result must reflect the update
+  assert.equal(result[0].status, 'revoked');
+  assert.equal(result[0].extra, 'original');
+});
+
+test('upsertCredential returns a distinct object reference for updated entry', () => {
+  const original = [{ id: 'a', status: 'active' }];
+  const result = upsertCredential(original, { id: 'a', status: 'revoked' });
+  assert.notEqual(result[0], original[0]);
+});
+
+test('upsertCredential non-updated entries are also distinct references', () => {
+  const original = [{ id: 'a', v: 1 }, { id: 'b', v: 2 }];
+  const result = upsertCredential(original, { id: 'a', v: 99 });
+  // The bystander entry at index 1 must not be the same object reference
+  assert.notEqual(result[1], original[1]);
+  // But its data is preserved
+  assert.deepEqual(result[1], original[1]);
 });

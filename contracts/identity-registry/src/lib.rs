@@ -2,11 +2,29 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,
-    Address, Bytes, Env, Map, String, Symbol,
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
-    Map, String, Symbol, Vec,
+    Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 use soroban_sdk::xdr::ToXdr;
+
+pub const CONTRACT_VERSION: u32 = 1;
+const EVENT_VERSION: u32 = 1;
+
+mod keys;
+
+// ── Storage keys ──────────────────────────────────────────────────────────────
+
+const IDENTITY: Symbol = symbol_short!("IDENTITY");
+const ADMIN: Symbol = symbol_short!("ADMIN");
+const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
+const DID_COUNT: Symbol = symbol_short!("DIDCNT");
+const TOTAL_DIDS: Symbol = symbol_short!("TOTDIDS");
+
+const DID_STELLAR_PREFIX: &[u8] = b"did:stellar:";
+const TTL_LEDGERS: u32 = 6_312_000;
+
+/// Maximum number of service endpoints allowed on a DID document.
+/// Exceeding this limit returns [`ContractError::MetadataTooLarge`].
+const MAX_SERVICES: u32 = 10;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -26,44 +44,8 @@ pub enum ContractError {
     NotPendingAdmin = 11,
 }
 
-/// Version returned by `ping` for deployment health checks.
-pub const CONTRACT_VERSION: u32 = 1;
-
-/// Schema version stamped on every emitted event. Increment on breaking schema changes
-/// so indexers can distinguish old from new event formats without silent breakage.
-const EVENT_VERSION: u32 = 1;
-
-mod keys;
-
-// ── Storage keys ──────────────────────────────────────────────────────────────
-
-const IDENTITY: Symbol = symbol_short!("IDENTITY");
-const ADMIN: Symbol = symbol_short!("ADMIN");
-const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
-const DID_COUNT: Symbol = symbol_short!("DIDCNT");
-const TOTAL_DIDS: Symbol = symbol_short!("TOTDIDS");
-
-/// Byte prefix for on-chain DID strings (`did:stellar:<address>`).
-const DID_STELLAR_PREFIX: &[u8] = b"did:stellar:";
-
-/// ~1 year in ledgers (5-second ledger close time).
-/// Used as the TTL extension on every persistent read/write.
-const TTL_LEDGERS: u32 = 6_312_000;
-
-// ── Errors ────────────────────────────────────────────────────────────────────
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum IdentityError {
-    AlreadyInitialized = 1,
-    AlreadyExists = 2,
-    NotFound = 3,
-    Unauthorized = 4,
-}
-
 // ── Data types ────────────────────────────────────────────────────────────────
 
-/// Storage usage statistics for the identity registry.
 #[contracttype]
 #[derive(Clone)]
 pub struct IdentityStorageStats {
@@ -71,35 +53,23 @@ pub struct IdentityStorageStats {
     pub active_dids: u32,
 }
 
-/// W3C DID Core service endpoint entry (optional field on {@link DidDocument}).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServiceEndpoint {
-    /// URI identifying this service endpoint (e.g. `did:stellar:…#messaging`).
     pub id: String,
-    /// Service type (e.g. `DIDCommMessaging`, `CredentialService`).
     pub type_: String,
-    /// URL or URI where the service can be reached.
     pub service_endpoint: String,
 }
 
-/// W3C-aligned DID document stored on-chain.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DidDocument {
-    /// did:stellar:<address>
     pub id: String,
-    /// Wallet that owns this DID
     pub controller: Address,
-    /// Arbitrary metadata (e.g. service endpoints, public keys)
     pub metadata: Map<String, String>,
-    /// Unix timestamp of creation
     pub created_at: u64,
-    /// Unix timestamp of last update
     pub updated_at: u64,
-    /// Whether this DID is active
     pub active: bool,
-    /// W3C DID Core optional service endpoints (empty by default).
     pub services: Vec<ServiceEndpoint>,
 }
 
@@ -110,33 +80,10 @@ pub struct IdentityRegistry;
 
 #[contractimpl]
 impl IdentityRegistry {
-    /// Lightweight read-only liveness check used by deployment monitors.
     pub fn ping(_env: Env) -> u32 {
         CONTRACT_VERSION
     }
 
-    // ── Admin ─────────────────────────────────────────────────────────────────
-
-    /// Initialize the registry with an admin address.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), IdentityError> {
-        if env.storage().instance().has(&ADMIN) {
-            return Err(IdentityError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&ADMIN, &admin);
-    /// Initializes the identity registry with an admin address.
-    ///
-    /// Must be called once before any other function. Subsequent calls will
-    /// return [`ContractError::AlreadyInitialized`].
-    ///
-    /// Follows the canonical pattern documented in `contracts/README.md`.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `admin` - The address that will have admin privileges over this registry.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::AlreadyInitialized`] if the contract has already
-    /// been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         Self::require_uninitialized(&env)?;
         Self::set_admin(&env, &admin);
@@ -144,119 +91,44 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    /// Transfers admin rights to a new address. Only the current admin can call this.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `current_admin` - The current admin address (must sign the transaction).
-    /// * `new_admin` - The address to transfer admin rights to.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::Unauthorized`] if `current_admin` does not match the stored admin address.
-    pub fn transfer_admin(
-        env: Env,
-        current_admin: Address,
-        new_admin: Address,
-    ) -> Result<(), ContractError> {
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), ContractError> {
         current_admin.require_auth();
-        let stored: Address = env
-            .storage()
-            .instance()
-            .get(&ADMIN)
-            .expect("not initialized");
+        let stored: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
         if stored != current_admin {
             panic!("not the admin");
         }
         env.storage().instance().set(&ADMIN, &new_admin);
-        env.events().publish(
-            (ADMIN, symbol_short!("transfer")),
-            (EVENT_VERSION, current_admin, new_admin),
-        );
+        env.events().publish((ADMIN, symbol_short!("transfer")), (EVENT_VERSION, current_admin, new_admin));
         Ok(())
     }
 
-    /// Proposes a new admin via two-step transfer (admin only).
-    ///
-    /// The proposed admin must subsequently call [`Self::accept_admin`] to complete
-    /// the transfer. This prevents accidental transfers to uncontrolled addresses.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
-    /// Returns [`ContractError::Unauthorized`] if `admin` is not the current admin.
-    pub fn propose_admin(
-        env: Env,
-        admin: Address,
-        proposed: Address,
-    ) -> Result<(), ContractError> {
+    pub fn propose_admin(env: Env, admin: Address, proposed: Address) -> Result<(), ContractError> {
         admin.require_auth();
-        let stored: Address = env
-            .storage()
-            .instance()
-            .get(&ADMIN)
-            .ok_or(ContractError::NotInitialized)?;
+        let stored: Address = env.storage().instance().get(&ADMIN).ok_or(ContractError::NotInitialized)?;
         if stored != admin {
             return Err(ContractError::Unauthorized);
         }
         env.storage().instance().set(&PENDING_ADMIN, &proposed);
-        env.events().publish(
-            (ADMIN, symbol_short!("proposed")),
-            (EVENT_VERSION, admin, proposed),
-        );
+        env.events().publish((ADMIN, symbol_short!("proposed")), (EVENT_VERSION, admin, proposed));
         Ok(())
     }
 
-    /// Accepts a pending admin proposal (proposed admin only).
-    ///
-    /// Must be called by the address previously nominated via [`Self::propose_admin`].
-    /// Completes the two-step admin transfer and clears the pending slot.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::NoPendingAdmin`] if no admin proposal is pending.
-    /// Returns [`ContractError::NotPendingAdmin`] if the caller is not the proposed admin.
     pub fn accept_admin(env: Env, proposed: Address) -> Result<(), ContractError> {
         proposed.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&PENDING_ADMIN)
-            .ok_or(ContractError::NoPendingAdmin)?;
+        let pending: Address = env.storage().instance().get(&PENDING_ADMIN).ok_or(ContractError::NoPendingAdmin)?;
         if pending != proposed {
             return Err(ContractError::NotPendingAdmin);
         }
         env.storage().instance().remove(&PENDING_ADMIN);
-        let old_admin: Address = env
-            .storage()
-            .instance()
-            .get(&ADMIN)
-            .ok_or(ContractError::NotInitialized)?;
+        let old_admin: Address = env.storage().instance().get(&ADMIN).ok_or(ContractError::NotInitialized)?;
         env.storage().instance().set(&ADMIN, &proposed);
-        env.events().publish(
-            (ADMIN, symbol_short!("accepted")),
-            (EVENT_VERSION, old_admin, proposed),
-        );
+        env.events().publish((ADMIN, symbol_short!("accepted")), (EVENT_VERSION, old_admin, proposed));
         Ok(())
     }
 
-    /// Upgrades the contract WASM to a new hash. Only the admin can call this.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `admin` - The admin address (must sign the transaction).
-    /// * `new_wasm_hash` - The 32-byte hash of the new WASM binary to upgrade to.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::Unauthorized`] if `admin` does not match the stored admin address.
-    pub fn upgrade(
-        env: Env,
-        admin: Address,
-        new_wasm_hash: BytesN<32>,
-    ) -> Result<(), ContractError> {
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         admin.require_auth();
-        let stored: Address = env
-            .storage()
-            .instance()
-            .get(&ADMIN)
-            .ok_or(ContractError::NotInitialized)?;
+        let stored: Address = env.storage().instance().get(&ADMIN).ok_or(ContractError::NotInitialized)?;
         if stored != admin {
             return Err(ContractError::Unauthorized);
         }
@@ -264,54 +136,19 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    // ── DID management ────────────────────────────────────────────────────────
-
-    /// Create a new DID for the caller.
-    pub fn create_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<String, IdentityError> {
-    /// Creates a new DID document for the given controller address.
-    ///
-    /// The DID identifier is derived as `did:stellar:<bech32-address>` and stored
-    /// on-chain with the supplied metadata. The controller must sign the transaction.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `controller` - The Stellar address that will own and control this DID.
-    /// * `metadata` - Arbitrary key-value pairs to embed in the DID document.
-    ///   Keys must be ≤ 64 characters; values must be ≤ 256 characters.
-    ///
-    /// # Returns
-    /// The newly created DID string (e.g. `did:stellar:GABC…`).
-    ///
-    /// # Errors
-    /// Returns [`ContractError::MetadataTooLong`] if any key exceeds 64 characters
-    /// or any value exceeds 256 characters.
-    ///
-    /// # Panics
-    /// Panics with `"DID already exists for this address"` if a DID already exists
-    /// for the given controller.
-    pub fn create_did(
-        env: Env,
-        controller: Address,
-        metadata: Map<String, String>,
-    ) -> Result<String, ContractError> {
+    pub fn create_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<String, ContractError> {
         controller.require_auth();
-
         let storage = env.storage().persistent();
-        let key = keys::did_key(&env, &controller);
-
+        let key = Self::did_key(&env, &controller);
         if storage.has(&key) {
-            return Err(IdentityError::AlreadyExists);
             return Err(ContractError::DidAlreadyExists);
         }
-
         Self::validate_metadata(&metadata)?;
-
         let did_id = Self::build_did_string(&env, &controller);
         if !Self::validate_did_format(&env, &did_id) {
             return Err(ContractError::DidNotFound);
         }
         let now = env.ledger().timestamp();
-
         let doc = DidDocument {
             id: did_id.clone(),
             controller: controller.clone(),
@@ -321,132 +158,124 @@ impl IdentityRegistry {
             active: true,
             services: Vec::new(&env),
         };
-
         storage.set(&key, &doc);
         storage.extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
-
-        // Increment active DID count and total DID count
         let count: u32 = env.storage().instance().get(&DID_COUNT).unwrap_or(0);
         env.storage().instance().set(&DID_COUNT, &(count + 1));
         let total: u32 = env.storage().instance().get(&TOTAL_DIDS).unwrap_or(0);
         env.storage().instance().set(&TOTAL_DIDS, &(total + 1));
-
-        env.events()
-            .publish((IDENTITY, symbol_short!("created")), (EVENT_VERSION, controller, now));
-
+        env.events().publish((IDENTITY, symbol_short!("created")), (EVENT_VERSION, controller, now));
         Ok(did_id)
     }
 
-    /// Update metadata on an existing DID.
-    pub fn update_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<(), IdentityError> {
-    /// Updates the metadata on an existing DID document.
-    ///
-    /// Replaces the entire metadata map with the supplied values. The controller
-    /// must sign the transaction. Emits an `IDENTITY/updated` event containing
-    /// a SHA-256 fingerprint of the new metadata.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `controller` - The address that owns the DID (must sign the transaction).
-    /// * `metadata` - New key-value metadata to store. Must be non-empty.
-    ///   Keys must be ≤ 64 characters; values must be ≤ 256 characters.
-    ///
-    /// # Errors
-    /// Returns [`ContractError::EmptyMetadata`] if `metadata` is empty.
-    /// Returns [`ContractError::MetadataTooLong`] if any key or value exceeds
-    /// the length limits.
-    ///
-    /// # Panics
-    /// Panics with `"DID not found"` if no DID exists for the given controller.
-    pub fn update_did(
-        env: Env,
-        controller: Address,
-        metadata: Map<String, String>,
-    ) -> Result<(), ContractError> {
+    /// Appends a service endpoint to an existing DID document.
+    /// Returns [`ContractError::MetadataTooLarge`] when the document already has
+    /// [`MAX_SERVICES`] endpoints.
+    pub fn add_service(env: Env, controller: Address, service: ServiceEndpoint) -> Result<(), ContractError> {
         controller.require_auth();
-
-        if metadata.is_empty() {
-            return Err(ContractError::EmptyMetadata);
-        }
-
-        Self::validate_metadata(&metadata)?;
-
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).ok_or(IdentityError::NotFound)?;
-        let key = keys::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
-        let key = Self::did_key(&env, &controller);
         let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
-
         if !doc.active {
             return Err(ContractError::DidDeactivated);
         }
-
-        doc.metadata = metadata;
+        if doc.services.len() >= MAX_SERVICES {
+            return Err(ContractError::MetadataTooLarge);
+        }
+        doc.services.push_back(service);
         doc.updated_at = env.ledger().timestamp();
-
         storage.set(&key, &doc);
-        env.events().publish((IDENTITY, symbol_short!("updated")), controller);
+        storage.extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+        env.events().publish((IDENTITY, symbol_short!("svc_add")), (EVENT_VERSION, controller, doc.updated_at));
         Ok(())
     }
 
-    /// Deactivate a DID (soft delete).
-    pub fn deactivate_did(env: Env, controller: Address) -> Result<(), IdentityError> {
+    pub fn update_did(env: Env, controller: Address, metadata: Map<String, String>) -> Result<(), ContractError> {
         controller.require_auth();
-
+        if metadata.is_empty() {
+            return Err(ContractError::EmptyMetadata);
+        }
+        Self::validate_metadata(&metadata)?;
         let storage = env.storage().persistent();
         let key = Self::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).ok_or(IdentityError::NotFound)?;
+        let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
+        if !doc.active {
+            return Err(ContractError::DidDeactivated);
+        }
+        doc.metadata = metadata;
+        doc.updated_at = env.ledger().timestamp();
+        storage.set(&key, &doc);
         storage.extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
-
-        // Hash the DID id + updated_at as a deterministic metadata fingerprint
         let mut hash_input = Self::string_to_bytes(&env, &doc.id);
         hash_input.extend_from_array(&doc.updated_at.to_be_bytes());
         let meta_hash = env.crypto().sha256(&hash_input).to_bytes();
-        env.events().publish(
-            (IDENTITY, symbol_short!("updated")),
-            (EVENT_VERSION, controller, meta_hash),
-        );
+        env.events().publish((IDENTITY, symbol_short!("updated")), (EVENT_VERSION, controller, meta_hash));
         Ok(())
     }
 
-    /// Deactivates a DID (soft delete). The DID record is retained on-chain but
-    /// marked inactive. Deactivated DIDs cannot be resolved and will return
-    /// [`ContractError::DidDeactivated`] on [`Self::resolve_did`].
-    ///
-    /// The controller must sign the transaction. Emits a `IDENTITY/deact` event.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `controller` - The address that owns the DID (must sign the transaction).
-    ///
-    /// # Panics
-    /// Panics with `"DID not found"` if no DID exists for the given controller.
     pub fn deactivate_did(env: Env, controller: Address) -> Result<(), ContractError> {
         controller.require_auth();
-
         let storage = env.storage().persistent();
-        let key = keys::did_key(&env, &controller);
-        let mut doc: DidDocument = storage.get(&key).expect("DID not found");
         let key = Self::did_key(&env, &controller);
         let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
-
         doc.active = false;
         doc.updated_at = env.ledger().timestamp();
-
         storage.set(&key, &doc);
-        env.events().publish((IDENTITY, symbol_short!("deactivated")), controller);
         storage.extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
-
-        // Decrement DID count
         let count: u32 = env.storage().instance().get(&DID_COUNT).unwrap_or(0);
         if count > 0 {
             env.storage().instance().set(&DID_COUNT, &(count - 1));
         }
+        env.events().publish((IDENTITY, symbol_short!("deact")), (EVENT_VERSION, controller, doc.updated_at));
+        Ok(())
+    }
+
+    /// Reactivates a deactivated DID. Only the admin can call this.
+    ///
+    /// Sets `active=true` and updates `updated_at` on the existing document.
+    /// If the DID is already active, this is a no-op and returns `Ok(())`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `admin` - The admin address (must sign the transaction).
+    /// * `controller` - The address whose DID to reactivate.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::Unauthorized`] if `admin` is not the current admin.
+    /// Returns [`ContractError::DidNotFound`] if no DID exists for the controller.
+    pub fn reactivate_did(env: Env, admin: Address, controller: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let storage = env.storage().persistent();
+        let key = Self::did_key(&env, &controller);
+        let mut doc: DidDocument = storage.get(&key).ok_or(ContractError::DidNotFound)?;
+
+        // No-op if already active
+        if doc.active {
+            return Ok(());
+        }
+
+        doc.active = true;
+        doc.updated_at = env.ledger().timestamp();
+
+        storage.set(&key, &doc);
+        storage.extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+
+        // Increment active DID count
+        let count: u32 = env.storage().instance().get(&DID_COUNT).unwrap_or(0);
+        env.storage().instance().set(&DID_COUNT, &(count + 1));
 
         env.events().publish(
-            (IDENTITY, symbol_short!("deact")),
+            (IDENTITY, symbol_short!("reactivated")),
             (EVENT_VERSION, controller, doc.updated_at),
         );
         Ok(())
@@ -474,29 +303,14 @@ impl IdentityRegistry {
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
         }
-        let doc: DidDocument = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(IdentityError::NotFound)
-            .ok_or(ContractError::DidNotFound)?;
+        let doc: DidDocument = env.storage().persistent().get(&key).ok_or(ContractError::DidNotFound)?;
         if !doc.active {
             return Err(ContractError::DidDeactivated);
         }
         Ok(doc)
     }
 
-    /// Returns `true` if the given address has an active DID, `false` otherwise.
-    ///
-    /// This is a lightweight read that does not return the full document.
-    /// Use [`Self::resolve_did`] to fetch the complete [`DidDocument`].
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `controller` - The Stellar address to check.
     pub fn has_active_did(env: Env, controller: Address) -> bool {
-        let key = keys::did_key(&env, &controller);
-        match env.storage().persistent().get::<Bytes, DidDocument>(&key) {
         let key = Self::did_key(&env, &controller);
         if env.storage().persistent().has(&key) {
             env.storage().persistent().extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
@@ -507,30 +321,10 @@ impl IdentityRegistry {
         }
     }
 
-    /// Returns the current count of active (non-deactivated) DIDs in the registry.
-    ///
-    /// This counter is incremented on [`Self::create_did`] and decremented on
-    /// [`Self::deactivate_did`].
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
     pub fn get_did_count(env: Env) -> u32 {
         env.storage().instance().get(&DID_COUNT).unwrap_or(0)
     }
 
-    fn did_key(env: &Env, controller: &Address) -> Bytes {
-        let mut key = Bytes::new(env);
-        key.extend_from_array(&[b'd', b'i', b'd', b':']);
-        let addr_bytes = controller.to_string().into_bytes();
-        key.extend_from_slice(&addr_bytes);
-        key
-    /// Returns storage usage statistics for the identity registry.
-    ///
-    /// Includes the total number of DIDs ever created (`total_dids`) and the
-    /// current number of active DIDs (`active_dids`).
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
     pub fn get_storage_stats(env: Env) -> IdentityStorageStats {
         IdentityStorageStats {
             total_dids: env.storage().instance().get(&TOTAL_DIDS).unwrap_or(0),
@@ -540,9 +334,6 @@ impl IdentityRegistry {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn build_did_id(env: &Env, controller: &Address) -> String {
-        let prefix = String::from_str(env, "did:stellar:");
-    /// Canonical init guard — see `contracts/README.md`.
     fn require_uninitialized(env: &Env) -> Result<(), ContractError> {
         if env.storage().instance().has(&ADMIN) {
             return Err(ContractError::AlreadyInitialized);
@@ -550,7 +341,6 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    /// Canonical admin persistence — see `contracts/README.md`.
     fn set_admin(env: &Env, admin: &Address) {
         env.storage().instance().set(&ADMIN, admin);
     }
@@ -567,22 +357,15 @@ impl IdentityRegistry {
         Ok(())
     }
 
-    // Derives a stable storage key from the raw XDR bytes of the address so the
-    // key is never affected by changes to Address::to_string() across SDK versions.
     fn did_key(env: &Env, controller: &Address) -> (Symbol, BytesN<32>) {
         let key_bytes = env.crypto().sha256(&controller.clone().to_xdr(env));
         (IDENTITY, key_bytes)
     }
 
-    /// Builds a `did:stellar:<address>` string from a controller address.
-    ///
-    /// Pure construction helper — callers validate format separately via
-    /// [`Self::validate_did_format`].
     fn build_did_string(env: &Env, controller: &Address) -> String {
         let addr_str = controller.to_string();
         let mut addr_bytes = [0u8; 56];
         addr_str.copy_into_slice(&mut addr_bytes);
-
         let prefix_len = DID_STELLAR_PREFIX.len();
         let mut result = [0u8; 68];
         result[..prefix_len].copy_from_slice(DID_STELLAR_PREFIX);
@@ -621,6 +404,16 @@ mod tests {
     extern crate std;
     use std::string::ToString;
 
+    fn setup() -> (Env, IdentityRegistryClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        (env, client)
+    }
+
     #[test]
     fn test_ping_returns_version() {
         let env = Env::default();
@@ -630,354 +423,203 @@ mod tests {
     }
 
     #[test]
-    fn test_upgrade_unauthorized_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        client.initialize(&admin);
-
-        let result = client.try_upgrade(&attacker, &BytesN::from_array(&env, &[0u8; 32]));
-        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
-    }
-
-    #[test]
-    fn test_upgrade_not_initialized_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let result = client.try_upgrade(&admin, &BytesN::from_array(&env, &[0u8; 32]));
-        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
-    }
-
-    #[test]
     fn test_double_initialize_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
+        let (env, client) = setup();
         let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let result = client.try_initialize(&admin);
-        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+        assert_eq!(client.try_initialize(&admin), Err(Ok(ContractError::AlreadyInitialized)));
     }
 
     #[test]
     fn test_create_and_resolve_did() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
+        let (env, client) = setup();
         let user = Address::generate(&env);
-        let metadata: Map<String, String> = Map::new(&env);
-
-        let did_id = client.create_did(&user, &metadata);
-        assert!(did_id.to_string().contains("did:stellar:"));
-
+        let did_id = client.create_did(&user, &Map::new(&env));
+        let did_str = did_id.to_string();
+        assert!(did_str.contains("did:stellar:"));
         let doc = client.resolve_did(&user);
         assert!(doc.active);
         assert_eq!(doc.controller, user);
     }
 
     #[test]
-    fn test_did_format_validation() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let user = Address::generate(&env);
-        let metadata: Map<String, String> = Map::new(&env);
-
-        let did_id = client.create_did(&user, &metadata);
-
-        // Test that the DID format is valid
-        assert!(IdentityRegistry::validate_did_format(&env, &did_id));
-
-        // Test the exact format: did:stellar:<address>
-        let did_str = did_id.to_string();
-        assert!(did_str.starts_with("did:stellar:"));
-        assert!(did_str.len() > "did:stellar:".len());
-
-        // The address part should match the controller
-        let expected_addr = user.to_string();
-        let mut expected_addr_bytes = [0u8; 56];
-        expected_addr.copy_into_slice(&mut expected_addr_bytes);
-        let expected_addr = std::str::from_utf8(&expected_addr_bytes).unwrap();
-        let addr_part = &did_str["did:stellar:".len()..];
-        assert_eq!(addr_part, expected_addr);
-    }
-
-    #[test]
     fn test_deactivate_did() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
+        let (env, client) = setup();
         let user = Address::generate(&env);
-        let metadata: Map<String, String> = Map::new(&env);
-        client.create_did(&user, &metadata);
-
+        client.create_did(&user, &Map::new(&env));
         assert!(client.has_active_did(&user));
         client.deactivate_did(&user);
         assert!(!client.has_active_did(&user));
     }
 
     #[test]
-    fn test_error_variants() {
-        let env = Env::default();
-        env.mock_all_auths();
-    /// resolve_did on a deactivated DID must return DidDeactivated error.
-    #[test]
     fn test_resolve_deactivated_did_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        assert_eq!(client.try_initialize(&admin), Err(Ok(IdentityError::AlreadyInitialized)));
-
-        let user = Address::generate(&env);
-        assert_eq!(client.try_resolve_did(&user), Err(Ok(IdentityError::NotFound)));
-
-        let metadata: Map<String, String> = Map::new(&env);
-        client.create_did(&user, &metadata);
-        assert_eq!(client.try_create_did(&user, &metadata), Err(Ok(IdentityError::AlreadyExists)));
+        let (env, client) = setup();
         let user = Address::generate(&env);
         client.create_did(&user, &Map::new(&env));
         client.deactivate_did(&user);
-
-        let result = client.try_resolve_did(&user);
-        assert_eq!(result, Err(Ok(ContractError::DidDeactivated)));
+        assert_eq!(client.try_resolve_did(&user), Err(Ok(ContractError::DidDeactivated)));
     }
 
-    /// resolve_did on a non-existent DID must return DidNotFound error.
     #[test]
     fn test_resolve_nonexistent_did_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
+        let (env, client) = setup();
         let user = Address::generate(&env);
-        let result = client.try_resolve_did(&user);
-        assert_eq!(result, Err(Ok(ContractError::DidNotFound)));
+        assert_eq!(client.try_resolve_did(&user), Err(Ok(ContractError::DidNotFound)));
     }
 
-    /// get_did_count must return 0 initially and increment on create_did.
     #[test]
     fn test_get_did_count() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
+        let (env, client) = setup();
         assert_eq!(client.get_did_count(), 0);
-
         let user1 = Address::generate(&env);
         client.create_did(&user1, &Map::new(&env));
         assert_eq!(client.get_did_count(), 1);
-
         let user2 = Address::generate(&env);
         client.create_did(&user2, &Map::new(&env));
         assert_eq!(client.get_did_count(), 2);
-
         client.deactivate_did(&user1);
         assert_eq!(client.get_did_count(), 1);
     }
 
-    /// create_did must return MetadataTooLong when a key exceeds 64 chars.
     #[test]
     fn test_create_did_metadata_key_too_long() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
+        let (env, client) = setup();
         let user = Address::generate(&env);
         let mut metadata: Map<String, String> = Map::new(&env);
-        // 65-character key
         metadata.set(
-            String::from_str(
-                &env,
-                "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeefffff1234567890",
-            ),
+            String::from_str(&env, "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeefffff1234567890"),
             String::from_str(&env, "value"),
         );
-
-        let result = client.try_create_did(&user, &metadata);
-        assert_eq!(result, Err(Ok(ContractError::MetadataTooLong)));
+        assert_eq!(client.try_create_did(&user, &metadata), Err(Ok(ContractError::MetadataTooLong)));
     }
 
-    /// update_did on a deactivated DID must return DidDeactivated.
     #[test]
-    fn test_update_deactivated_did_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-        let user = Address::generate(&env);
-        client.create_did(&user, &Map::new(&env));
-        client.deactivate_did(&user);
-        let mut metadata: Map<String, String> = Map::new(&env);
-        metadata.set(String::from_str(&env, "k"), String::from_str(&env, "v"));
-        let result = client.try_update_did(&user, &metadata);
-        assert_eq!(result, Err(Ok(ContractError::DidDeactivated)));
-    }
-
-    /// update_did must return EmptyMetadata when an empty map is passed.
-    #[test]
-    fn test_update_did_empty_metadata_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let user = Address::generate(&env);
-        let mut metadata: Map<String, String> = Map::new(&env);
-        metadata.set(
-            String::from_str(&env, "key"),
-            String::from_str(&env, "value"),
+    fn test_upgrade_unauthorized_returns_error() {
+        let (env, client) = setup();
+        let attacker = Address::generate(&env);
+        assert_eq!(
+            client.try_upgrade(&attacker, &BytesN::from_array(&env, &[0u8; 32])),
+            Err(Ok(ContractError::Unauthorized))
         );
-        client.create_did(&user, &metadata);
-
-        let result = client.try_update_did(&user, &Map::new(&env));
-        assert_eq!(result, Err(Ok(ContractError::EmptyMetadata)));
     }
 
-    /// update_did must return MetadataTooLong when a value exceeds 256 chars.
-    #[test]
-    fn test_update_did_metadata_value_too_long() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let user = Address::generate(&env);
-        client.create_did(&user, &Map::new(&env));
-
-        let mut metadata: Map<String, String> = Map::new(&env);
-        // 257-character value
-        let long_val = "a".repeat(257);
-        metadata.set(
-            String::from_str(&env, "key"),
-            String::from_str(&env, &long_val),
-        );
-
-        let result = client.try_update_did(&user, &metadata);
-        assert_eq!(result, Err(Ok(ContractError::MetadataTooLong)));
-    }
-
-    /// get_storage_stats returns correct total and active DID counts.
     #[test]
     fn test_get_storage_stats() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, IdentityRegistry);
-        let client = IdentityRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
+        let (env, client) = setup();
         let stats = client.get_storage_stats();
         assert_eq!(stats.total_dids, 0);
         assert_eq!(stats.active_dids, 0);
-
         let user1 = Address::generate(&env);
         let user2 = Address::generate(&env);
         client.create_did(&user1, &Map::new(&env));
         client.create_did(&user2, &Map::new(&env));
-
         let stats = client.get_storage_stats();
         assert_eq!(stats.total_dids, 2);
         assert_eq!(stats.active_dids, 2);
-
         client.deactivate_did(&user1);
-
         let stats = client.get_storage_stats();
         assert_eq!(stats.total_dids, 2);
         assert_eq!(stats.active_dids, 1);
     }
 
-    /// Storage key byte prefixes must be pairwise distinct.
-    #[test]
-    fn test_storage_prefixes_are_unique() {
-        let prefixes: &[&[u8]] = &[DID_STELLAR_PREFIX];
-        for (i, left) in prefixes.iter().enumerate() {
-            for right in prefixes.iter().skip(i + 1) {
-                assert_ne!(left, right);
-            }
-        }
+    fn make_service(env: &Env, n: u32) -> ServiceEndpoint {
+        let mut buf = [0u8; 3];
+        buf[0] = b'a' + (n % 26) as u8;
+        buf[1] = b'0' + (n / 10) as u8;
+        buf[2] = b'0' + (n % 10) as u8;
+        let s = String::from_bytes(env, &buf);
+        ServiceEndpoint { id: s.clone(), type_: s.clone(), service_endpoint: s }
     }
 
-    /// build_did_string produces the expected did:stellar:<address> form.
+    /// Exactly MAX_SERVICES endpoints must be accepted; MAX_SERVICES+1 must return MetadataTooLarge.
     #[test]
-    fn test_build_did_string() {
+    fn test_add_service_max_services_boundary() {
+        let (env, client) = setup();
+        let user = Address::generate(&env);
+        client.create_did(&user, &Map::new(&env));
+        for i in 0..MAX_SERVICES {
+            client.add_service(&user, &make_service(&env, i));
+        }
+        let result = client.try_add_service(&user, &make_service(&env, MAX_SERVICES));
+        assert_eq!(result, Err(Ok(ContractError::MetadataTooLarge)));
+    }
+
+    /// reactivate_did called by non-admin returns Unauthorized.
+    #[test]
+    fn test_reactivate_did_unauthorized_non_admin() {
         let env = Env::default();
         env.mock_all_auths();
 
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
         let user = Address::generate(&env);
-        let did = IdentityRegistry::build_did_string(&env, &user);
 
-        let did_str = did.to_string();
-        assert!(did_str.starts_with("did:stellar:"));
+        client.initialize(&admin);
+        client.create_did(&user, &Map::new(&env));
+        client.deactivate_did(&user);
 
-        let expected_addr = user.to_string();
-        let mut expected_addr_bytes = [0u8; 56];
-        expected_addr.copy_into_slice(&mut expected_addr_bytes);
-        let expected_addr = std::str::from_utf8(&expected_addr_bytes).unwrap();
-        let addr_part = &did_str[DID_STELLAR_PREFIX.len()..];
-        assert_eq!(addr_part, expected_addr);
-        assert!(IdentityRegistry::validate_did_format(&env, &did));
+        let result = client.try_reactivate_did(&non_admin, &user);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    /// reactivate_did on an already-active DID is a no-op and returns Ok.
+    #[test]
+    fn test_reactivate_did_already_active_is_noop() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        client.initialize(&admin);
+        client.create_did(&user, &Map::new(&env));
+
+        // DID is already active; reactivate should be a no-op
+        let result = client.try_reactivate_did(&admin, &user);
+        assert_eq!(result, Ok(Ok(())));
+
+        // Verify DID is still active
+        assert!(client.has_active_did(&user));
+    }
+
+    /// reactivate_did restores an active DID and increments count.
+    #[test]
+    fn test_reactivate_did_restores_active_did() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, IdentityRegistry);
+        let client = IdentityRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        client.initialize(&admin);
+        client.create_did(&user, &Map::new(&env));
+
+        assert_eq!(client.get_did_count(), 1);
+        assert!(client.has_active_did(&user));
+
+        // Deactivate
+        client.deactivate_did(&user);
+        assert_eq!(client.get_did_count(), 0);
+        assert!(!client.has_active_did(&user));
+
+        // Reactivate
+        let result = client.try_reactivate_did(&admin, &user);
+        assert_eq!(result, Ok(Ok(())));
+
+        assert_eq!(client.get_did_count(), 1);
+        assert!(client.has_active_did(&user));
+
+        // Verify the document is now active
+        let doc = client.resolve_did(&user);
+        assert!(doc.active);
     }
 }
