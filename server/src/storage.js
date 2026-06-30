@@ -2,6 +2,34 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { requestContextStore } from './request-context.js';
 
+// ── StorageAdapter interface (#389) ──────────────────────────────────────────
+// Custom adapters must export a default object implementing:
+//   read(id)           → Promise<object|null>
+//   write(id, data)    → Promise<void>
+//   delete(id)         → Promise<boolean>
+//   list()             → Promise<object[]>
+//
+// Set STORAGE_ADAPTER to the absolute path of a custom adapter module.
+// When unset, the filesystem adapter below is used.
+
+let _customAdapter = null;
+
+export async function loadStorageAdapter() {
+  const adapterPath = process.env.STORAGE_ADAPTER;
+  if (!adapterPath) return null;
+  const mod = await import(adapterPath);
+  const adapter = mod.default ?? mod;
+  for (const method of ['read', 'write', 'delete', 'list']) {
+    if (typeof adapter[method] !== 'function') {
+      throw new Error(`StorageAdapter at ${adapterPath} is missing method: ${method}`);
+    }
+  }
+  _customAdapter = adapter;
+  return adapter;
+}
+
+export function getStorageAdapter() { return _customAdapter; }
+
 let lastCheckedDate = null;
 
 export async function cleanOldAuditLogs(config) {

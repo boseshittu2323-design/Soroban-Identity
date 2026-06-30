@@ -58,6 +58,22 @@ export function findExpiringCredentials(credentials, { windowDays, now = new Dat
     .filter((c) => includeNotified || !c.expiry_notified_at);
 }
 
+/**
+ * Cursor-based pagination over an array sorted by `id`.
+ * The cursor is the last-seen `id`; pass null/undefined for the first page.
+ */
+export function paginateCursor(items, { limit = 50, cursor = null } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, Number.parseInt(limit, 10) || 50));
+  const startIndex = cursor
+    ? items.findIndex((item) => item.id === cursor) + 1
+    : 0;
+  const page = items.slice(startIndex, startIndex + safeLimit);
+  const nextCursor = page.length === safeLimit && startIndex + safeLimit < items.length
+    ? page[page.length - 1].id
+    : null;
+  return { items: page, nextCursor };
+}
+
 export function paginate(items, { page = 1, pageSize = 50 } = {}) {
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safePageSize = Math.min(200, Math.max(1, Number.parseInt(pageSize, 10) || 50));
