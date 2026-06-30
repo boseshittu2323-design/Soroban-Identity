@@ -21,11 +21,50 @@ The server configuration can be customized using the following environment varia
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `PORT` | HTTP port the server listens on. | `3001` |
-| `ADMIN_API_KEY` | Key for authenticating request calls on `/admin/*` endpoints. | unset |
+| `ADMIN_API_KEY` | Key for authenticating request calls on `/admin/*` endpoints. Supports scoped access (see API Key Scopes below). | unset |
 | `DATA_DIR` | Directory path for local file storage. | `./data` |
 | `AUDIT_LOG_PATH` | Base file path prefix used for daily rotated audit logs. | `[DATA_DIR]/audit` |
 | `AUDIT_LOG_RETENTION_DAYS` | Number of days to retain rotated audit logs. | `30` |
 | `CREDENTIAL_STORE_PATH` | Storage location for credential records. | `[DATA_DIR]/credentials.json` |
+
+## API Key Scopes
+
+The server supports granular access control through API key scopes. Instead of granting full access, you can issue scoped keys for specific operations.
+
+### Scope Format
+
+```
+<api-key>:<scope1>,<scope2>,<scope3>
+```
+
+### Available Scopes
+
+- **`credentials:read`** - Verify and read credentials
+- **`credentials:write`** - Issue new credentials
+- **`admin:read`** - View administrative data (issuers, expiry reports)
+- **`admin:write`** - Modify administrative settings (add/remove issuers)
+- **`*`** - Wildcard grants all permissions
+
+### Examples
+
+```bash
+# Read-only dashboard access
+X-API-Key: my-key:credentials:read,admin:read
+
+# Issuer integration (write-only)
+X-API-Key: my-key:credentials:write
+
+# Full admin access
+X-API-Key: my-key:admin:read,admin:write
+
+# Full access (wildcard)
+X-API-Key: my-key:*
+
+# Legacy format (no scopes = full access)
+X-API-Key: my-key
+```
+
+For detailed documentation, see [API Key Scopes](../docs/api-key-scopes.md).
 
 ## Audit Log Naming & Rotation
 

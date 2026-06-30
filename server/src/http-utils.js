@@ -59,19 +59,88 @@ export function notFound(res) {
   sendJson(res, 404, { error: "not_found" });
 }
 
-export function requireAdmin(req, res, config) {
+/**
+ * Authenticate and authorize a request with optional scope requirements.
+ * 
+ * @param {object} req - HTTP request object
+ * @param {object} res - HTTP response object
+ * @param {object} config - Server configuration
+ * @param {string[]} requiredScopes - Array of required scopes (e.g., ['credentials:write'])
+ * @returns {boolean} True if authenticated and authorized, false otherwise
+ */
+export function requireAuth(req, res, config, requiredScopes = []) {
   if (!config.adminApiKey) {
-    sendJson(res, 503, { error: "admin_api_key_not_configured" });
+    sendJson(res, 503, { 
+      error: "admin_api_key_not_configured",
+      code: "SERVICE_UNAVAILABLE",
+      message: "API key authentication is not configured"
+    });
     return false;
   }
+  
   const token =
     req.headers["x-api-key"] ||
     req.headers.authorization?.replace(/^Bearer\s+/i, "");
-  if (token !== config.adminApiKey) {
-    sendJson(res, 401, { error: "unauthorized" });
+    
+  if (!token) {
+    sendJson(res, 401, { 
+      error: "unauthorized",
+      code: "UNAUTHORIZED",
+      message: "Missing API key"
+    });
     return false;
   }
+  
+  // Parse API key record if it contains scope information
+  // Format: apiKey:scope1,scope2,scope3 or just apiKey for full access
+  const [keyPart, scopesPart] = token.split(':');
+  const keyScopes = scopesPart ? scopesPart.split(',') : [];
+  
+  // Simple comparison for the admin key (backward compatible)
+  if (keyPart !== config.adminApiKey) {
+    sendJson(res, 401, { 
+      error: "unauthorized",
+      code: "UNAUTHORIZED",
+      message: "Invalid API key"
+    });
+    return false;
+  }
+  
+  // If this is the admin key without scopes, grant full access
+  if (!scopesPart) {
+    req.apiKeyScopes = ['*'];
+    return true;
+  }
+  
+  // Check if required scopes are present
+  if (requiredScopes.length > 0) {
+    const hasWildcard = keyScopes.includes('*');
+    const hasAllScopes = requiredScopes.every(required => 
+      hasWildcard || keyScopes.includes(required)
+    );
+    
+    if (!hasAllScopes) {
+      const missingScopes = requiredScopes.filter(s => !keyScopes.includes(s));
+      sendJson(res, 403, { 
+        error: "forbidden",
+        code: "INSUFFICIENT_SCOPE",
+        message: "API key does not have required permissions",
+        requiredScopes,
+        missingScopes
+      });
+      return false;
+    }
+  }
+  
+  req.apiKeyScopes = keyScopes;
   return true;
+}
+
+/**
+ * Legacy admin check - maintains backward compatibility
+ */
+export function requireAdmin(req, res, config) {
+  return requireAuth(req, res, config, []);
 }
 
 /**
