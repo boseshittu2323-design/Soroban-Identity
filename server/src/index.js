@@ -5,19 +5,20 @@ import { ensureDataDir } from './storage.js';
 import { ExpiryNotificationJob } from './expiry.js';
 import { MetricsAggregator, MetricsService } from './metrics.js';
 import { SorobanClient } from './soroban.js';
+import { logger } from './logger.js';
 
 const validationResult = validateConfig();
 if (!validationResult.isValid) {
   if (validationResult.missing.length > 0) {
-    console.error('[config] Missing required environment variables:');
+    logger.error({ missing: validationResult.missing }, 'Missing required environment variables');
     for (const err of validationResult.missing) {
-      console.error(`  - ${err}`);
+      logger.error(`  - ${err}`);
     }
   }
   if (validationResult.invalid.length > 0) {
-    console.error('[config] Invalid environment variables:');
+    logger.error({ invalid: validationResult.invalid }, 'Invalid environment variables');
     for (const err of validationResult.invalid) {
-      console.error(`  - ${err}`);
+      logger.error(`  - ${err}`);
     }
   }
   process.exit(1);
@@ -45,7 +46,7 @@ server.on('connection', (socket) => {
 });
 
 server.listen(config.port, () => {
-  console.log(`Soroban Identity server listening on :${config.port}`);
+  logger.info({ port: config.port }, 'Soroban Identity server listening');
 });
 
 let shuttingDown = false;
@@ -53,7 +54,7 @@ function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  console.log('Shutting down…');
+  logger.info({ signal }, 'Shutting down');
 
   if (process.env.DISABLE_EXPIRY_JOB !== 'true') {
     expiryJob.stop();
@@ -61,7 +62,7 @@ function shutdown(signal) {
 
   const timeoutMs = Number.parseInt(process.env.SHUTDOWN_TIMEOUT_MS ?? '10000', 10);
   const timer = setTimeout(() => {
-    console.warn(`Graceful shutdown timed out after ${timeoutMs}ms. Forcing exit.`);
+    logger.warn({ timeoutMs }, 'Graceful shutdown timed out, forcing exit');
     for (const socket of connections) {
       socket.destroy();
     }
@@ -74,9 +75,9 @@ function shutdown(signal) {
     try {
       await soroban.drain();
     } catch (error) {
-      console.error('Error during soroban drain:', error);
+      logger.error({ error: error.message, stack: error.stack }, 'Error during soroban drain');
     }
-    console.log('Shutdown complete');
+    logger.info('Shutdown complete');
     process.exit(0);
   });
 }

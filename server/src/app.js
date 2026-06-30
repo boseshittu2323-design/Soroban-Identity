@@ -13,6 +13,7 @@ import {
   validateContentType,
 } from "./http-utils.js";
 import { requestContextStore } from "./request-context.js";
+import { logger } from "./logger.js";
 const SERVER_VERSION = "0.1.0";
 const MIN_SDK_VERSION = "0.1.0";
 const SERVER_FEATURES = ["webhook_delivery", "batch_issuance", "event_polling"];
@@ -57,7 +58,7 @@ export function createApp({ config, soroban, metrics, metricsAggregator }) {
           if (metricsAggregator)
             await metricsAggregator
               .refresh()
-              .catch((error) => console.error("metrics refresh failed", error));
+              .catch((error) => logger.error({ error: error.message, stack: error.stack }, 'Metrics refresh failed'));
           return sendText(res, 200, metrics.renderPrometheus());
         }
 
@@ -205,13 +206,17 @@ export function createApp({ config, soroban, metrics, metricsAggregator }) {
         return notFound(res);
       } catch (error) {
         if (error.name === "SorobanError") {
-          console.error(error.internalDetail);
+          logger.error({ 
+            error: error.category, 
+            message: error.publicMessage,
+            internalDetail: error.internalDetail 
+          }, 'Soroban error occurred');
           return sendJson(res, 500, {
             error: error.category,
             message: error.publicMessage,
           });
         }
-        console.error(error);
+        logger.error({ error: error.message, stack: error.stack }, 'Internal server error');
         return sendJson(res, 500, {
           error: "internal_server_error",
           message: error.message,

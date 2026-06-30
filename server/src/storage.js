@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { requestContextStore } from './request-context.js';
+import { logger } from './logger.js';
 
 // ── StorageAdapter interface (#389) ──────────────────────────────────────────
 // Custom adapters must export a default object implementing:
@@ -63,7 +64,7 @@ export async function cleanOldAuditLogs(config) {
     }
   } catch (error) {
     if (error.code !== 'ENOENT') {
-      console.error('Failed to clean old audit logs:', error);
+      logger.error({ error: error.message, stack: error.stack, dir }, 'Failed to clean old audit logs');
     }
   }
 }

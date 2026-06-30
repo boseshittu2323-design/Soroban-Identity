@@ -5,6 +5,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 let _indexedCredentials = null;
 let _expiryIndex = null;
 
+import { logger } from './logger.js';
+
 /**
  * Build a sorted index of credentials that have an `expires_at` value, ordered
  * ascending by expiry time. Pass this to `findExpiringCredentials` to avoid
@@ -96,9 +98,9 @@ export class ExpiryNotificationJob {
 
   start() {
     if (this.timer) return;
-    this.runOnce().catch((error) => console.error('expiry job failed', error));
+    this.runOnce().catch((error) => logger.error({ error: error.message, stack: error.stack }, 'Expiry job failed'));
     this.timer = setInterval(() => {
-      this.runOnce().catch((error) => console.error('expiry job failed', error));
+      this.runOnce().catch((error) => logger.error({ error: error.message, stack: error.stack }, 'Expiry job failed'));
     }, this.config.expiryJobIntervalMs);
   }
 
