@@ -21,6 +21,7 @@ The server configuration can be customized using the following environment varia
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `PORT` | HTTP port the server listens on. | `3001` |
+| `LOG_LEVEL` | Logging verbosity (trace, debug, info, warn, error, fatal). All logs are structured JSON. | `info` |
 | `ADMIN_API_KEY` | Key for authenticating request calls on `/admin/*` endpoints. Supports scoped access (see API Key Scopes below). | unset |
 | `DATA_DIR` | Directory path for local file storage. | `./data` |
 | `AUDIT_LOG_PATH` | Base file path prefix used for daily rotated audit logs. | `[DATA_DIR]/audit` |

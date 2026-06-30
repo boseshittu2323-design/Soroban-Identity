@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 export async function readJson(req, config) {
   // Check Content-Length header first
   const contentLength = req.headers["content-length"];
@@ -8,9 +10,11 @@ export async function readJson(req, config) {
         req.headers["x-forwarded-for"]?.split(",")[0] ||
         req.socket?.remoteAddress ||
         "unknown";
-      console.warn(
-        `[readJson] Payload too large from ${remoteIp}: ${length} bytes (limit: ${config.maxBodyBytes})`,
-      );
+      logger.warn({
+        remoteIp,
+        contentLength: length,
+        limit: config.maxBodyBytes
+      }, 'Payload too large (Content-Length check)');
       return { __payloadTooLarge: true };
     }
   }
@@ -25,9 +29,11 @@ export async function readJson(req, config) {
         req.headers["x-forwarded-for"]?.split(",")[0] ||
         req.socket?.remoteAddress ||
         "unknown";
-      console.warn(
-        `[readJson] Payload too large from ${remoteIp}: exceeded ${config.maxBodyBytes} bytes during streaming`,
-      );
+      logger.warn({
+        remoteIp,
+        totalBytes,
+        limit: config.maxBodyBytes
+      }, 'Payload too large (streaming check)');
       return { __payloadTooLarge: true };
     }
     chunks.push(chunk);

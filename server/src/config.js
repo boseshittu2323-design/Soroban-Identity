@@ -1,4 +1,5 @@
 import path from "node:path";
+import { logger } from './logger.js';
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), "data");
 
@@ -186,9 +187,7 @@ export function logDefaultValues(env = process.env) {
       val = env[item.key];
     }
     if (val === undefined || val === "") {
-      console.log(
-        `[config] [INFO] Optional variable ${item.key} is using default value: ${item.defaultVal}`,
-      );
+      logger.info({ variable: item.key, defaultValue: item.defaultVal }, 'Using default config value');
     }
   }
 }
