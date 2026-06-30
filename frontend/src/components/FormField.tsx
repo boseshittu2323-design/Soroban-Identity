@@ -9,6 +9,7 @@ export interface FormFieldProps {
   type?: 'text' | 'number';
   min?: number;
   id?: string;
+  name?: string;
   style?: CSSProperties;
 }
 
@@ -21,10 +22,12 @@ export default function FormField({
   type = 'text',
   min,
   id: idProp,
+  name,
   style,
 }: FormFieldProps) {
   const generatedId = useId();
-  const inputId = idProp ?? generatedId;
+  const inputId = idProp ?? name ?? generatedId;
+  const errorId = name ? `${name}-error` : `${inputId}-error`;
 
   return (
     <div style={style}>
@@ -42,26 +45,27 @@ export default function FormField({
       </label>
       <input
         id={inputId}
+        name={name}
         type={type}
         min={min}
         placeholder={placeholder}
         value={value}
         onChange={onChange}
         aria-invalid={error ? 'true' : undefined}
-        aria-describedby={error ? `${inputId}-error` : undefined}
+        aria-describedby={error ? errorId : undefined}
         style={{
           width: '100%',
           borderColor: error ? 'var(--error)' : undefined,
         }}
       />
       {error && (
-        <p
-          id={`${inputId}-error`}
+        <span
+          id={errorId}
           role="alert"
-          style={{ color: 'var(--error)', fontSize: '0.75rem', marginTop: '0.25rem' }}
+          style={{ display: 'block', color: 'var(--error)', fontSize: '0.75rem', marginTop: '0.25rem' }}
         >
           {error}
-        </p>
+        </span>
       )}
     </div>
   );

@@ -125,6 +125,79 @@ function countByExpiry(creds: Credential[], filter: ExpiryFilterType): number {
   return creds.length;
 }
 
+function CredentialEmptyState({ searchedAddress }: { searchedAddress: string | null }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: "0.75rem",
+        minHeight: "12rem",
+        padding: "2.5rem 1rem",
+        textAlign: "center",
+        color: "var(--text-muted)",
+      }}
+    >
+      <svg
+        width="56"
+        height="56"
+        viewBox="0 0 56 56"
+        fill="none"
+        aria-hidden="true"
+      >
+        <rect
+          x="10"
+          y="8"
+          width="36"
+          height="40"
+          rx="8"
+          fill="var(--card-bg-accent)"
+          stroke="var(--border-input)"
+          strokeWidth="2"
+        />
+        <path
+          d="M19 23h18M19 31h12"
+          stroke="var(--accent-light)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        />
+        <circle
+          cx="38"
+          cy="38"
+          r="7"
+          fill="var(--card-bg)"
+          stroke="var(--accent-light)"
+          strokeWidth="2"
+        />
+        <path
+          d="m35.5 38 1.8 1.8 3.7-4"
+          stroke="var(--accent-light)"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      <div>
+        <h3 style={{ margin: "0 0 0.35rem", color: "var(--text)", fontSize: "1rem" }}>
+          No credentials yet
+        </h3>
+        <p style={{ margin: 0, fontSize: "0.9rem", lineHeight: 1.5 }}>
+          Credentials issued to your DID will appear here.
+        </p>
+        {searchedAddress && (
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.8rem", lineHeight: 1.4 }}>
+            Searched account {searchedAddress.slice(0, 6)}...{searchedAddress.slice(-4)}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type CredentialState =
   | { status: 'idle' }
   | { status: 'loading' }
@@ -477,12 +550,7 @@ export default function CredentialsPanel({ verifyId }: { verifyId?: string | nul
         {fetching ? (
           <SkeletonCard variant="credential" />
         ) : fetchedCredentials !== null && fetchedCredentials.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "2rem 1rem", color: "var(--text-muted)" }}>
-            <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🪪</div>
-            <p style={{ margin: 0, fontSize: "0.9rem" }}>
-              No credentials found for this address.
-            </p>
-          </div>
+          <CredentialEmptyState searchedAddress={searchedAddress} />
         ) : sortedCredentials.length === 0 ? (
           <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
             No credentials match the selected filters.

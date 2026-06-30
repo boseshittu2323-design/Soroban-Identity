@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 const STATE = { CLOSED: 'CLOSED', OPEN: 'OPEN', HALF_OPEN: 'HALF_OPEN' };
 
 export class SorobanUnavailableError extends Error {
@@ -88,7 +90,7 @@ export class CircuitBreaker {
     const prev = this.#state;
     this.#state = newState;
     this.#lastStateChange = new Date().toISOString();
-    console.log(`[circuit-breaker] ${prev} → ${newState}`);
+    logger.info({ from: prev, to: newState, failures: this.#failures }, 'Circuit breaker state transition');
   }
 
   /** Snapshot suitable for inclusion in the /health response. */

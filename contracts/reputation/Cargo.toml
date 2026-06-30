@@ -8,6 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { version = "21.0.0", features = ["alloc"] }
+shared-errors = { path = "../shared-errors" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }

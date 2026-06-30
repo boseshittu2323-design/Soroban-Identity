@@ -113,3 +113,69 @@ fn contracts_expose_ping_version() {
     assert_eq!(credentials.ping(), 1);
     assert_eq!(reputation.ping(), 1);
 }
+
+/// End-to-end cross-contract lifecycle test (#400):
+/// Deploys all three contracts in one Env, registers a DID, issues a credential
+/// for that DID, submits a reputation score, and asserts final state across all
+/// three contracts is consistent.
+#[test]
+fn cross_contract_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let identity_id = env.register_contract(None, IdentityRegistry);
+    let credential_id = env.register_contract(None, CredentialManager);
+    let reputation_id = env.register_contract(None, Reputation);
+
+    let identity = IdentityRegistryClient::new(&env, &identity_id);
+    let credentials = CredentialManagerClient::new(&env, &credential_id);
+    let reputation = ReputationClient::new(&env, &reputation_id);
+
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let reporter = Address::generate(&env);
+    let subject = Address::generate(&env);
+
+    // Initialize all three contracts
+    identity.initialize(&admin);
+    credentials.initialize(&admin, &identity_id);
+    reputation.initialize(&admin);
+
+    // 1. Register DID in identity-registry
+    let did = identity.create_did(&subject, &Map::new(&env));
+    assert!(identity.has_active_did(&subject));
+    let doc = identity.resolve_did(&subject);
+    assert!(doc.active);
+    assert_eq!(doc.controller, subject);
+    let mut did_bytes = [0u8; 68];
+    did.copy_into_slice(&mut did_bytes);
+    assert_eq!(&did_bytes[..12], b"did:stellar:");
+
+    // 2. Issue a credential for that DID subject in credential-manager
+    credentials.add_issuer(&issuer);
+    let cred_id = credentials.issue_credential(
+        &issuer,
+        &subject,
+        &CredentialType::Kyc,
+        &Map::new(&env),
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &Bytes::from_array(&env, &[1u8; 64]),
+        &0u64,
+    );
+    assert!(credentials.verify_credential(&cred_id));
+    let cred = credentials.get_credential(&cred_id);
+    assert_eq!(cred.subject, subject);
+
+    // 3. Submit a reputation score for the same subject in reputation
+    reputation.add_reporter(&reporter);
+    let reason = String::from_str(&env, "kyc verified");
+    reputation.submit_score(&reporter, &subject, &60, &reason);
+
+    // Assert final state across all three contracts is consistent
+    assert!(identity.has_active_did(&subject));          // DID still active
+    assert!(credentials.verify_credential(&cred_id));    // credential still valid
+    let rec = reputation.get_reputation(&subject);
+    assert!(rec.score > 0);                              // reputation score is non-zero
+    assert_eq!(rec.reporter_count, 1);
+    assert!(reputation.passes_sybil_check(&subject, &50, &1));
+}
