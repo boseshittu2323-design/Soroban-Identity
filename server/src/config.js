@@ -54,6 +54,7 @@ export function loadConfig(env = process.env) {
       env.EXPIRY_JOB_INTERVAL_MS,
       60 * 60 * 1000,
     ),
+    expiryConcurrency: parseInteger(env.EXPIRY_CONCURRENCY, 8),
     notificationWebhookUrl: env.NOTIFICATION_WEBHOOK_URL ?? "",
     subjectNotificationWebhooks: parseJson(
       env.SUBJECT_NOTIFICATION_WEBHOOKS,
@@ -111,6 +112,7 @@ export function validateConfig(env = process.env) {
     { key: "PORT", desc: "must be a valid integer" },
     { key: "EXPIRY_WARNING_DAYS", desc: "must be a valid integer" },
     { key: "EXPIRY_JOB_INTERVAL_MS", desc: "must be a valid integer" },
+    { key: "EXPIRY_CONCURRENCY", desc: "must be a valid integer" },
     { key: "SOROBAN_POOL_SIZE", desc: "must be a valid integer" },
     { key: "SOROBAN_INVOKE_TIMEOUT_MS", desc: "must be a valid integer" },
     { key: "RPC_CACHE_TTL_MS", desc: "must be a valid integer" },
@@ -162,6 +164,7 @@ export function logDefaultValues(env = process.env) {
     { key: "DATA_DIR", defaultVal: "data" },
     { key: "EXPIRY_WARNING_DAYS", defaultVal: "7" },
     { key: "EXPIRY_JOB_INTERVAL_MS", defaultVal: "3600000" },
+    { key: "EXPIRY_CONCURRENCY", defaultVal: "8" },
     { key: "NOTIFICATION_WEBHOOK_URL", defaultVal: "''" },
     { key: "SUBJECT_NOTIFICATION_WEBHOOKS", defaultVal: "{}" },
     { key: "SOROBAN_POOL_SIZE", defaultVal: "4" },
