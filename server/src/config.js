@@ -1,4 +1,5 @@
 import path from "node:path";
+import { logger } from './logger.js';
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), "data");
 
@@ -53,12 +54,14 @@ export function loadConfig(env = process.env) {
       env.EXPIRY_JOB_INTERVAL_MS,
       60 * 60 * 1000,
     ),
+    expiryConcurrency: parseInteger(env.EXPIRY_CONCURRENCY, 8),
     notificationWebhookUrl: env.NOTIFICATION_WEBHOOK_URL ?? "",
     subjectNotificationWebhooks: parseJson(
       env.SUBJECT_NOTIFICATION_WEBHOOKS,
       {},
     ),
     poolSize: parseInteger(env.SOROBAN_POOL_SIZE, 4),
+    sorobanInvokeTimeoutMs: parseInteger(env.SOROBAN_INVOKE_TIMEOUT_MS, 10000),
     stellarCli: env.STELLAR_CLI ?? "stellar",
     sourceAccount: env.STELLAR_SOURCE_ACCOUNT ?? env.STELLAR_SECRET_KEY ?? "",
     network: env.STELLAR_NETWORK ?? "testnet",
@@ -109,7 +112,9 @@ export function validateConfig(env = process.env) {
     { key: "PORT", desc: "must be a valid integer" },
     { key: "EXPIRY_WARNING_DAYS", desc: "must be a valid integer" },
     { key: "EXPIRY_JOB_INTERVAL_MS", desc: "must be a valid integer" },
+    { key: "EXPIRY_CONCURRENCY", desc: "must be a valid integer" },
     { key: "SOROBAN_POOL_SIZE", desc: "must be a valid integer" },
+    { key: "SOROBAN_INVOKE_TIMEOUT_MS", desc: "must be a valid integer" },
     { key: "RPC_CACHE_TTL_MS", desc: "must be a valid integer" },
     { key: "RPC_MAX_RETRIES", desc: "must be a valid integer" },
     { key: "RPC_RETRY_BASE_MS", desc: "must be a valid integer" },
@@ -159,9 +164,11 @@ export function logDefaultValues(env = process.env) {
     { key: "DATA_DIR", defaultVal: "data" },
     { key: "EXPIRY_WARNING_DAYS", defaultVal: "7" },
     { key: "EXPIRY_JOB_INTERVAL_MS", defaultVal: "3600000" },
+    { key: "EXPIRY_CONCURRENCY", defaultVal: "8" },
     { key: "NOTIFICATION_WEBHOOK_URL", defaultVal: "''" },
     { key: "SUBJECT_NOTIFICATION_WEBHOOKS", defaultVal: "{}" },
     { key: "SOROBAN_POOL_SIZE", defaultVal: "4" },
+    { key: "SOROBAN_INVOKE_TIMEOUT_MS", defaultVal: "10000" },
     { key: "STELLAR_CLI", defaultVal: "'stellar'" },
     { key: "STELLAR_NETWORK", defaultVal: "'testnet'" },
     {
@@ -183,9 +190,7 @@ export function logDefaultValues(env = process.env) {
       val = env[item.key];
     }
     if (val === undefined || val === "") {
-      console.log(
-        `[config] [INFO] Optional variable ${item.key} is using default value: ${item.defaultVal}`,
-      );
+      logger.info({ variable: item.key, defaultValue: item.defaultVal }, 'Using default config value');
     }
   }
 }

@@ -10,10 +10,14 @@ import {
   Cell,
 } from "recharts";
 import type { ScoreHistoryEntry } from "../../../sdk/src/reputation";
+import SkeletonCard from "./SkeletonCard";
 
 interface Props {
   history: ScoreHistoryEntry[];
+  isLoading?: boolean;
 }
+
+const CHART_HEIGHT = 200;
 
 function formatTimestamp(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -26,7 +30,7 @@ function formatDateForInput(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-export default function ReputationChart({ history }: Props) {
+export default function ReputationChart({ history, isLoading = false }: Props) {
   const [startDate, setStartDate] = useState<string>(() => {
     const end = new Date();
     const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -60,10 +64,14 @@ export default function ReputationChart({ history }: Props) {
     setValidationError(null);
   };
 
+  if (isLoading) {
+    return <SkeletonCard height={CHART_HEIGHT} aria-label="Loading reputation chart" />;
+  }
+
   if (history.length === 0) {
     return (
-      <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "1rem 0" }}>
-        No score history available.
+      <p role="status" style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "1rem 0" }}>
+        No reputation history yet.
       </p>
     );
   }
@@ -126,7 +134,7 @@ export default function ReputationChart({ history }: Props) {
         </div>
       )}
 
-      <div style={{ width: "100%", height: 200 }}>
+      <div style={{ width: "100%", height: CHART_HEIGHT }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={filteredHistory} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-input)" />
