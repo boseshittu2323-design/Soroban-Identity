@@ -1,9 +1,39 @@
 import { readCredentials, upsertCredential, writeCredentials } from './storage.js';
+import { logger } from './logger.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 let _indexedCredentials = null;
 let _expiryIndex = null;
+
+/**
+ * Create a bounded concurrency limiter that processes tasks with a maximum
+ * number of concurrent executions.
+ * 
+ * @param {number} concurrency - Maximum number of concurrent tasks
+ * @returns {Function} Async function that wraps a task with concurrency control
+ */
+function createConcurrencyPool(concurrency) {
+  let running = 0;
+  const queue = [];
+  
+  async function run(fn) {
+    while (running >= concurrency) {
+      await new Promise(resolve => queue.push(resolve));
+    }
+    
+    running++;
+    try {
+      return await fn();
+    } finally {
+      running--;
+      const next = queue.shift();
+      if (next) next();
+    }
+  }
+  
+  return run;
+}
 
 /**
  * Build a sorted index of credentials that have an `expires_at` value, ordered
@@ -58,6 +88,22 @@ export function findExpiringCredentials(credentials, { windowDays, now = new Dat
     .filter((c) => includeNotified || !c.expiry_notified_at);
 }
 
+/**
+ * Cursor-based pagination over an array sorted by `id`.
+ * The cursor is the last-seen `id`; pass null/undefined for the first page.
+ */
+export function paginateCursor(items, { limit = 50, cursor = null } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, Number.parseInt(limit, 10) || 50));
+  const startIndex = cursor
+    ? items.findIndex((item) => item.id === cursor) + 1
+    : 0;
+  const page = items.slice(startIndex, startIndex + safeLimit);
+  const nextCursor = page.length === safeLimit && startIndex + safeLimit < items.length
+    ? page[page.length - 1].id
+    : null;
+  return { items: page, nextCursor };
+}
+
 export function paginate(items, { page = 1, pageSize = 50 } = {}) {
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safePageSize = Math.min(200, Math.max(1, Number.parseInt(pageSize, 10) || 50));
@@ -76,13 +122,22 @@ export class ExpiryNotificationJob {
     this.soroban = soroban;
     this.timer = null;
     this.nextLedger = Number.parseInt(process.env.EXPIRY_EVENTS_START_LEDGER ?? '0', 10);
+    this.concurrency = Number.parseInt(process.env.EXPIRY_CONCURRENCY ?? '8', 10);
+    
+    // Ensure concurrency is at least 1
+    if (this.concurrency < 1) {
+      logger.warn({ original: this.concurrency, clamped: 1 }, 'EXPIRY_CONCURRENCY too low, clamping to 1');
+      this.concurrency = 1;
+    }
+    
+    logger.info({ concurrency: this.concurrency }, 'Expiry notification job concurrency configured');
   }
 
   start() {
     if (this.timer) return;
-    this.runOnce().catch((error) => console.error('expiry job failed', error));
+    this.runOnce().catch((error) => logger.error({ error: error.message, stack: error.stack }, 'Expiry job failed'));
     this.timer = setInterval(() => {
-      this.runOnce().catch((error) => console.error('expiry job failed', error));
+      this.runOnce().catch((error) => logger.error({ error: error.message, stack: error.stack }, 'Expiry job failed'));
     }, this.config.expiryJobIntervalMs);
   }
 
@@ -95,12 +150,60 @@ export class ExpiryNotificationJob {
     let credentials = await readCredentials(this.config);
     credentials = await this.indexCredentialEvents(credentials);
     const expiring = findExpiringCredentials(credentials, { windowDays: this.config.expiryWarningDays });
-    for (const credential of expiring) {
-      await this.dispatch(credential);
-      credentials = upsertCredential(credentials, { ...credential, expiry_notified_at: new Date().toISOString() });
+    
+    if (expiring.length === 0) return 0;
+    
+    logger.info({ count: expiring.length, concurrency: this.concurrency }, 'Processing expiring credentials');
+    
+    // Create bounded concurrency pool
+    const pool = createConcurrencyPool(this.concurrency);
+    
+    // Process credentials concurrently with bounded parallelism
+    const results = await Promise.allSettled(
+      expiring.map(credential => 
+        pool(async () => {
+          try {
+            await this.dispatch(credential);
+            return { credential, success: true };
+          } catch (error) {
+            logger.error({ 
+              credentialId: credential.id,
+              error: error.message,
+              stack: error.stack 
+            }, 'Failed to dispatch expiry notification');
+            return { credential, success: false, error };
+          }
+        })
+      )
+    );
+    
+    // Update credentials with notification timestamps for successful dispatches
+    let updated = credentials;
+    let successCount = 0;
+    let failureCount = 0;
+    
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.success) {
+        const { credential } = result.value;
+        updated = upsertCredential(updated, { 
+          ...credential, 
+          expiry_notified_at: new Date().toISOString() 
+        });
+        successCount++;
+      } else {
+        failureCount++;
+      }
     }
-    await writeCredentials(this.config, credentials);
-    return expiring.length;
+    
+    await writeCredentials(this.config, updated);
+    
+    logger.info({ 
+      total: expiring.length,
+      success: successCount,
+      failed: failureCount 
+    }, 'Completed expiry notification processing');
+    
+    return successCount;
   }
 
   async indexCredentialEvents(credentials) {
